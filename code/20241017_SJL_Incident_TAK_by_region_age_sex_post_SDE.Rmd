@@ -1,0 +1,131 @@
+---
+title: "Incidence of TAK by age, sex, and region"
+author: "Stephanie J Lax"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide
+  
+---
+
+```{r setup, include=FALSE}
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages at first use
+# install.packages("tidyverse")
+# install.packages("knitr")
+# install.packages("kableExtra")
+
+
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+#set working directory
+setwd("C:/Users/mszsjl3/OneDrive - The University of Nottingham/RECORDER/Takayasu arteritis/CVD-COVID-IMPACT project proposal/Analyses")
+```
+
+### Data
+
+```{r regional_TAK_incidence}
+incidence_data <- read.csv2("C:/Users/mszsjl3/OneDrive - The University of Nottingham/RECORDER/Takayasu arteritis/CVD-COVID-IMPACT project proposal/Exported_data/ccu075_01_M314_inc_rates_per_m_20241016.csv") %>%
+  select(-X)
+
+overall_incidence <- incidence_data %>%
+  filter(Group == "Overall") %>%
+  select(-c(Group, Percentage_to_publish)) 
+
+overall_incidence %>%
+  kable(booktabs = TRUE, align = "l", col.names = c("Cases of M31.4",
+                                                    "Population",
+                                                    "Crude incidence rate*",
+                                                    "Poisson 95% CI (lower bound)",
+                                                    "Poisson 95% CI (upper bound)")
+        )
+
+incidence_by_sex <- incidence_data %>%
+  filter(Group %in% c("Female", "Male")) 
+
+incidence_by_sex %>%
+  kable(booktabs = TRUE, align = "l", col.names = c("Sex",
+                                                    "Cases of M31.4",
+                                                    "Percentage of total cases",
+                                                    "Population", 
+                                                    "Crude incidence rate*",
+                                                    "Poisson 95% CI (lower bound)",
+                                                    "Poisson 95% CI (upper bound)")
+        )
+
+incidence_by_age <- incidence_data %>%
+  filter(Group %in% c("0-15", "16-39", "40-54", "55-69", "70-84", "85-90")) 
+
+incidence_by_age %>%
+  kable(booktabs = TRUE, align = "l", col.names = c("Age group",
+                                                    "Cases of M31.4",
+                                                    "Percentage of total cases",
+                                                    "Population", 
+                                                    "Crude incidence rate*",
+                                                    "Poisson 95% CI (lower bound)",
+                                                    "Poisson 95% CI (upper bound)")
+        )
+
+region_names <- data.frame(rbind(c("E12000001", "North East"),
+                                 c("E12000002", "North West"),
+                                 c("E12000003", "Yorkshire and The Humber"), 
+                                 c("E12000004", "East Midlands"),
+                                 c("E12000005", "West Midlands"), 
+                                 c("E12000006", "East of England"), 
+                                 c("E12000007", "London"), 
+                                 c("E12000008", "South East"), 
+                                 c("E12000009", "South West")))
+                  
+                  
+
+incidence_by_region <- left_join(incidence_data, region_names, by=c("Group"= "X1")) %>%
+  filter(Group %in% c("E12000001", "E12000002", "E12000003", 
+                      "E12000004", "E12000005", "E12000006", 
+                      "E12000007", "E12000008", "E12000009")) %>%
+  select(X2, Group, Cases_to_publish, Percentage_to_publish, 
+         Population, Crude_incidence, Lower_limit, Upper_limit)
+
+incidence_by_region  %>%
+  kable(booktabs = TRUE, align = "l", col.names = c("Region name", 
+                                                    "Region code", 
+                                                    "Cases of M31.4",
+                                                    "Percentage of total cases",
+                                                    "Population", 
+                                                    "Crude incidence rate*",
+                                                    "Poisson 95% CI (lower bound)",
+                                                    "Poisson 95% CI (upper bound)")
+        )
+
+incidence_ratios <- read.csv("C:/Users/mszsjl3/OneDrive - The University of Nottingham/RECORDER/Takayasu arteritis/CVD-COVID-IMPACT project proposal/Exported_data/ccu075_01_M314_inc_ratios_age_sex_region_20241016.csv") %>%
+  select(-X)
+
+incidence_data_with_crude_ratios <- left_join(incidence_data, incidence_ratios, by="Group") 
+
+adjusted_ratios <- incidence_ratios %>%
+  filter(grepl("\\*", Group)) %>%
+  mutate(Group = gsub("\\*", "", Group)) %>%
+  rename(aOR = OR,
+         aLower_CI = Lower_CI,
+         aUpper_CI = Upper_CI)
+
+incidence_data_with_adjusted_ratios <- left_join(incidence_data_with_crude_ratios, adjusted_ratios, by="Group") 
+
+incidence_final <- left_join(incidence_data_with_adjusted_ratios, region_names, by=c("Group"= "X1"))
+
+incidence_final  %>%
+  kable(booktabs = TRUE, align = "l")
+
+write.csv(incidence_final, "20241017_Incidence_by_age_sex_region.csv")
+```
+
+*NB: Counts rounded to nearest 5 to comply with NHSE disclosure controls. Total cases rounded based on the sum of the unrounded counts.*
+
+### Version
+
+```{r version}
+sessionInfo()
+```

@@ -1,0 +1,158 @@
+---
+title: "Supplementary analyses of prevalent cases of Takayasu Arteritis in England by IMD, ethnicity, and region"
+author: "Stephanie J Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document: 
+    code_folding: hide
+  pdf_document: default
+---
+
+```{r setup, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(ggrepel)
+library(ggplot2)
+```
+
+### Ethnicity and region of prevalent cases 1/07/2022
+
+```{r eth_region}
+cohort_ethnicity_region <- read.csv2("C:/Users/mszsjl3/OneDrive - The University of Nottingham/RECORDER/Takayasu arteritis/CVD-COVID-IMPACT project proposal/Exported_data/ccu075_01_M314_p_ethnicity_region_20241003.csv")
+
+#just white
+white <- cohort_ethnicity_region %>%
+  filter(Eth_simplified == "White") %>%
+  mutate(value = round(100*Cases/sum(Cases),1)) %>%
+  rename(group = region_name) %>%
+  select(-c(X, Eth_simplified, Cases))
+
+white2 <- white %>% 
+  mutate(csum = rev(cumsum(rev(value))), 
+         pos = value/2 + lead(csum, 1),
+         pos = if_else(is.na(pos), value/2, pos))
+
+ggplot(white, aes(x = "" , y = value, fill = fct_inorder(group))) +
+  geom_col(width = 1, color = 1) +
+  coord_polar(theta = "y") +
+  scale_fill_brewer(palette = "Pastel1") +
+  geom_label_repel(data = white2,
+                   aes(y = pos, label = paste0(value, "%")),
+                   size = 4.5, nudge_x = 1, show.legend = FALSE) +
+  guides(fill = guide_legend(title = "Group")) +
+  theme_void()
+
+#not white
+not_white <- cohort_ethnicity_region %>%
+  filter(Eth_simplified != "White") %>%
+  mutate(value = round(100*Cases/sum(Cases),1)) %>%
+  rename(group = region_name) %>%
+  select(-c(X, Eth_simplified, Cases))
+
+not_white2 <- not_white %>% 
+  mutate(csum = rev(cumsum(rev(value))), 
+         pos = value/2 + lead(csum, 1),
+         pos = if_else(is.na(pos), value/2, pos))
+
+ggplot(not_white, aes(x = "" , y = value, fill = fct_inorder(group))) +
+  geom_col(width = 1, color = 1) +
+  coord_polar(theta = "y") +
+  scale_fill_brewer(palette = "Pastel1") +
+  geom_label_repel(data = not_white2,
+                   aes(y = pos, label = paste0(value, "%")),
+                   size = 4.5, nudge_x = 1, show.legend = FALSE) +
+  guides(fill = guide_legend(title = "Group")) +
+  theme_void()
+```
+
+# Ethnicity of people with Takayasu arteritis in London versus elsewhere: prevalent cases 1/07/2022
+
+```{r eth_london}
+cohort_ethnicity_london <- read.csv2("C:/Users/mszsjl3/OneDrive - The University of Nottingham/RECORDER/Takayasu arteritis/CVD-COVID-IMPACT project proposal/Exported_data/ccu075_01_M314_p_ethnicity_london_v_else_20241003.csv")
+
+#just london
+london <- cohort_ethnicity_london %>%
+  filter(region_simplified == "London") %>%
+  mutate(value = round(100*Cases/sum(Cases),1)) %>%
+  rename(group = Eth_grouped) %>%
+  select(-c(X, region_simplified, Cases))
+
+london2 <- london %>% 
+  mutate(csum = rev(cumsum(rev(value))), 
+         pos = value/2 + lead(csum, 1),
+         pos = if_else(is.na(pos), value/2, pos))
+
+ggplot(london, aes(x = "" , y = value, fill = fct_inorder(group))) +
+  geom_col(width = 1, color = 1) +
+  coord_polar(theta = "y") +
+  scale_fill_brewer(palette = "Pastel1") +
+  geom_label_repel(data = london2,
+                   aes(y = pos, label = paste0(value, "%")),
+                   size = 4.5, nudge_x = 1, show.legend = FALSE) +
+  guides(fill = guide_legend(title = "Group")) +
+  theme_void()
+
+#not london
+not_london <- cohort_ethnicity_london %>%
+  filter(region_simplified != "London") %>%
+  mutate(value = round(100*Cases/sum(Cases),1)) %>%
+  rename(group = Eth_grouped) %>%
+  select(-c(X, region_simplified, Cases))
+
+not_london2 <- not_london %>% 
+  mutate(csum = rev(cumsum(rev(value))), 
+         pos = value/2 + lead(csum, 1),
+         pos = if_else(is.na(pos), value/2, pos))
+
+ggplot(not_london, aes(x = "" , y = value, fill = fct_inorder(group))) +
+  geom_col(width = 1, color = 1) +
+  coord_polar(theta = "y") +
+  scale_fill_brewer(palette = "Pastel1") +
+  geom_label_repel(data = not_london2,
+                   aes(y = pos, label = paste0(value, "%")),
+                   size = 4.5, nudge_x = 1, show.legend = FALSE) +
+  guides(fill = guide_legend(title = "Group")) +
+  theme_void()
+```
+
+### IMD and region of prevalent cases 1/07/2022
+
+```{r imd_region}
+cohort_region_imd <- read.csv2("C:/Users/mszsjl3/OneDrive - The University of Nottingham/RECORDER/Takayasu arteritis/CVD-COVID-IMPACT project proposal/Exported_data/ccu075_01_M314_p_region_imd_20241003.csv") 
+
+ggplot(cohort_region_imd, aes(fill=QUINTILE, y=Cases, x=region_name)) + 
+  geom_bar(position="fill", stat="identity") +
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  labs(x = "", fill = "IMD")
+```
+
+### Ethnicity and IMD of prevalent cases 1/07/2022
+
+```{r eth_imd}
+cohort_ethnicity_imd <- read.csv2("C:/Users/mszsjl3/OneDrive - The University of Nottingham/RECORDER/Takayasu arteritis/CVD-COVID-IMPACT project proposal/Exported_data/ccu075_01_M314_p_ethnicity_imd_20241003.csv") 
+
+ggplot(cohort_ethnicity_imd, aes(fill=QUINTILE, y=Cases, x=Eth_simplified)) + 
+  geom_bar(position="fill", stat="identity") +
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  labs(x = "", fill = "IMD")
+```
+
+NB: Cases rounded to nearest 5 to comply with disclosure control protocol.
+
+### Version
+
+```{r version}
+sessionInfo()
+```

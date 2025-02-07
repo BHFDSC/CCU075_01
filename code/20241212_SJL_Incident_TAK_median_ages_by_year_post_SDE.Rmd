@@ -1,0 +1,46 @@
+---
+title: "Median age of incident cases of Takayasu Arteritis in England by HES Year"
+author: "Stephanie J Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document: 
+    code_folding: hide
+  pdf_document: default
+---
+
+```{r setup, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+# Import data
+incidence_rates <- read.csv("C:/Users/mszsjl3/OneDrive - The University of Nottingham/RECORDER/Takayasu arteritis/CVD-COVID-IMPACT project proposal/Exported_data/ccu075_01_M314_age_by_year_20241211.csv")
+```
+
+### Median age by year of diagnosis
+
+```{r plot_by_year}
+# Plot number of incident cases per year with 95% Poisson CI and indicating COVID-19 pandemic
+ggplot(data=incidence_rates, aes(x=HES_YEAR, y=Median)) +
+  geom_line(aes(group=1), color="blue") +
+  geom_errorbar(aes(ymin=IQR1, ymax=IQR3), width=0.2) +
+  labs(title="Median age of incident cases of Takayasu arteritis (IQR)", x="HES year", y="Age (years)") +
+  theme_bw() +
+  theme(plot.title=element_text(size=10), axis.title=element_text(size=10),
+        panel.grid=element_line(colour="gray50", linetype="dotted"),
+        axis.text.x=element_text(size=10, angle=90, hjust=0, vjust=0.5), axis.text.y=element_text(size=10)) +
+  ylim(0,75) +
+  geom_point(size=1.5) +
+  geom_vline(xintercept=14.5, linetype="dashed", colour="red", linewidth=1) +
+  geom_label(label="COVID-19\npandemic", x=15.55, y=5,
+             label.padding=unit(0.2, "lines"), label.size=0.09, colour="black", fill="lightgoldenrodyellow")
+```
+
+### Version
+
+```{r version}
+sessionInfo()
+```
