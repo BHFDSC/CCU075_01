@@ -15,9 +15,11 @@ Our aim is to describe the incidence and prevalence of Takayasu arteritis in Eng
 Specific objectives:
 
 1.	*Compare Takayasu arteritis-tailored diagnosis date refinement strategies to select the optimal approach.
-2.	Identify cases of Takayasu arteritis in HES admitted patient care (HES APC) episodes and apply the optimised diagnosis date refinement strategy to establish the cohort of people in England receiving at least one TA code between 1997 and 2023.
-3.	Describe the incidence and prevalence of Takayasu arteritis within the cohort overall and by age, sex, ethnicity, and deprivation.
-*This bespoke validation work has already been completed anticipating this project in partnership with the National Congenital Anomaly and Rare Disease Registration Service (NCARDRS). It is intended to be submitted for publication as part of this manuscript.
+2.	Identify cases of Takayasu arteritis in HES Admitted Patient Care (HES APC) episodes and HES Outpatients (OP) and apply the optimised diagnosis date refinement strategy to establish the cohort of people in England receiving at least one TA code between 1997 and 2023.
+3.	Describe the incidence and prevalence of Takayasu arteritis within the cohort overall and by age, sex, ethnicity, deprivation, and region.
+4.	Compare the incidence of Takayasu arteritis before and after the COVID-19 pandemic.
+5.	Explore the completeness of data in HES Outpatients.
+6.	Determine the number of trusts with adequate numbers of TAK cases to gauge feasibility of future clinical trials.
 
 **This bespoke validation work has already been completed anticipating this project in partnership with the National Congenital Anomaly and Rare Disease Registration Service (NCARDRS). It is intended to be submitted for publication as part of this manuscript.*
 
