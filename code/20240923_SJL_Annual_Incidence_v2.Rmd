@@ -1,0 +1,202 @@
+---
+title: "Incidence estimates for Takayasu arteritis in England"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("odbc", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("DBI", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("gridExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("lmtest", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(gridExtra)
+
+#load data
+library(odbc)
+library(DBI)
+con <- DBI::dbConnect(odbc:::odbc(), "databricks")
+cohort = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_df_final_20240822_updated') # from 07_mix_step_2_of_3 (core table of cohort with one line per individual)
+denominators = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_region_age_sex_2006_2022') # ONS region data 2006-2022
+lsoas_pre_adjusted_date = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_lsoa_pre_adjusted_date_final_updated') # from 18_LSOA01_impute_updated
+lsoas_pre_index = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_lsoa_pre_index_date_final_updated') # from 18_LSOA01_impute_updated
+DBI::dbDisconnect(con)
+
+# Check denominator data
+# typeof(denominators$All_Persons)
+# summary(as.numeric(denominators$All_Persons))
+
+denominators_by_year <- denominators %>%
+  select(Year, Code, All_Persons) %>%
+  group_by(Year) %>%
+  summarise(Population = sum(as.numeric(All_Persons))) %>% 
+  ungroup()
+```
+
+### Incident cohort
+
+```{r incidence}
+# Remove individuals less than 2 years at adjusted diagnosis date
+cohort_over_2 <- cohort %>%
+  mutate(HES_YEAR = ifelse(month(final_diag_date) < 4, # map to HES year
+                           paste0(as.numeric(year(final_diag_date)) - 1, 
+                                  "/", 
+                                  str_sub(sprintf("%02d", 
+                                                  as.numeric(str_sub(year(final_diag_date), 
+                                                                     start= -2))), 
+                                          start= -2)), 
+                           paste0(as.numeric(year(final_diag_date)),
+                                  "/", 
+                                  str_sub(sprintf("%02d", 
+                                                  as.numeric(str_sub(year(final_diag_date), 
+                                                                     start= -2)) + 1), 
+                                          start= -2)))) %>% 
+  filter(as.numeric(final_age) >= 2) 
+
+#Lsoa/IMD linkage
+lsoas_pre_adjusted_date <- lsoas_pre_adjusted_date %>%
+  select(PERSON_ID_DEID, LSOA11_curated_pre_adjusted_date, info_LSOA11_pre_adjusted_date, 
+         LSOA01_curated_pre_adjusted_date, info_LSOA01_pre_adjusted_date)
+
+cohort_over_2_with_diag_lsoas <- left_join(cohort_over_2, lsoas_pre_adjusted_date, by=c("PERSON_ID_DEID")) %>%
+  mutate(diagnosis_YEAR = as.numeric(as.numeric(year(final_diag_date)))) %>%
+  mutate(LSOA_inc = ifelse(diagnosis_YEAR > 2009, # previously 2010 but resulted in some failed imd linkages for people diagnosed in 2010
+                           LSOA11_curated_pre_adjusted_date,
+                           LSOA01_curated_pre_adjusted_date)) 
+
+# Check imd linkage
+# cohort_check <- cohort_over_2_with_diag_lsoas %>%
+#   select(PERSON_ID_DEID, final_diag_date, diagnosis_YEAR, LSOA_inc) 
+# head(cohort_check) # all seemed in order
+
+#Remove non-English residents at point of diagnosis for incidence calculations
+incidence_cohort_England <- cohort_over_2_with_diag_lsoas %>%
+  filter(grepl("E", LSOA_inc, fixed=TRUE)) %>%
+  filter(final_diag_date > "2006-03-31") %>%
+  filter(final_diag_date < "2023-04-01") 
+```
+
+### Annual incidence 01/04/2006 - 31/03/2023
+
+```{r annual_incidence}
+# Set parameters for analyses
+CI_level <- 0.95
+rate_multiplier <- 1000000
+
+# Get raw counts
+raw_counts <- incidence_cohort_England %>%
+  group_by(HES_YEAR) %>%
+  count() %>%
+  ungroup()
+
+#Get population denominators in correct format
+population_to_merge <- data.frame(HES_YEAR = raw_counts$HES_YEAR, Population = as.numeric(denominators_by_year[[2]]))
+
+# Incidence per million with 2-tailed 95% Poisson confidence intervals
+incidence_rates <- full_join(raw_counts, population_to_merge, by="HES_YEAR") %>%
+  add_row(HES_YEAR = "Total", n = sum(raw_counts$n), Population = sum(population_to_merge$Population)) %>%
+  mutate(n_rounded = 5*round(n/5, 0)) %>%
+  mutate(Incidence_rate = n/Population*rate_multiplier) %>%
+  rowwise %>%
+  mutate(Lower_limit = poisson.test(n,conf.level = CI_level)$conf.int[1]/Population*rate_multiplier) %>%
+  mutate(Upper_limit = poisson.test(n,conf.level = CI_level)$conf.int[2]/Population*rate_multiplier) 
+
+Table_3 <- incidence_rates %>%
+  select(HES_YEAR, n_rounded, Population, Incidence_rate, Lower_limit, Upper_limit) 
+
+colnames(Table_3) <- c("HES Year", 
+                       "Number of incident cases", 
+                       "Population at risk", 
+                       "Incidence rate", 
+                       "95% CI lower bound",
+                       "95% CI upper bound")
+
+# write.csv2(Table_3, "ccu075_01_M314_incidence_per_year_20240923.csv")
+
+# Contextual information
+# Incident cases of Takayasu arteritis by HES year
+# 
+# Column 1: HES year of diagnosis
+# Column 2: Number of cases of Takayasu arteritis (M31.4) rounded to the nearest 5, with no values less than 10
+# Column 3: Person years at risk derived from publicly available data
+# Column 4*: Incidence rate derived from the unrounded counts used to produce column 2/Population in column 3*1,000,000
+# Column 5*: Poisson 95% confidence interval lower bound
+# Column 6*: Poisson 95% confidence interval upper bound
+# 
+# *Indicates unrounded rates and CI requested to preserve precision for subsequent processes outside the SDE. Whilst raw counts can be calculated from this, none less than 50 would be exposed.
+```
+
+Footnote: * Incident cases per million with 2-tailed 95% Poisson confidence interval.
+NB: Cases rounded to nearest 5 to comply with disclosure control protocol.
+
+### Regression models, including impact of COVID
+
+```{r regression}
+#First model with year term only
+incidence_rates2 <- incidence_rates %>%
+  filter(HES_YEAR != "Total") 
+incidence_rates2$year <- as.numeric(rownames(incidence_rates2)) # make year into an integer rather than a factor
+
+model1 <- glm(n~year, offset=log(Population), family = poisson(link="log"), data=incidence_rates2)
+
+#Second model with binary flag for COVID year
+incidence_rates2 <- incidence_rates2 %>%
+  mutate(covid_flag = ifelse(year == 15, 1, 0))
+
+model2 <- glm(n~year + covid_flag, offset=log(Population), family = poisson(link="log"), data=incidence_rates2)
+
+ecm <- exp(coef(model2))
+ci <- exp(confint(model2))
+p <- coef(summary(model2))[,4]
+
+collated_results <- data.frame(rbind(c(Term = "Year (continuous; unadjusted))", 
+                                       Coefficient = round(exp(coef(model1))[[2]], 2), 
+                                       Lower_CI = round(exp(confint(model1))[2,1], 2),
+                                       Upper_CI = round(exp(confint(model1))[2,2], 2),
+                                       P = round(coef(summary(model1))[,4][[2]], 4)),
+                                     c(Term = "Year (continuous; adjusted by COVID flag)", 
+                                       Coefficient = round(ecm[str_detect(names(ecm), pattern="year")][[1]],2), 
+                                       Lower_CI = round(ci[str_detect(row.names(ci), pattern="year"),][[1]],2), 
+                                       Upper_CI = round(ci[str_detect(row.names(ci), pattern="year"),][[2]],2),
+                                       P = round(p[str_detect(names(p), pattern="year")][[1]],4)),
+                                     c(Term = "COVID flag (binary; adjusted by year)", 
+                                       Coefficient = round(ecm[str_detect(names(ecm), pattern="covid")][[1]],2), 
+                                       Lower_CI = round(ci[str_detect(row.names(ci), pattern="covid"),][[1]],2), 
+                                       Upper_CI = round(ci[str_detect(row.names(ci), pattern="covid"),][[2]],2),
+                                       P = round(p[str_detect(names(p), pattern="covid")][[1]],4))
+))
+
+# write.csv(collated_results, "ccu075_01_M314_annual_incidence_20250311.csv")
+
+# Contextual information
+# Poisson regression modelling of trend in incidence rate of Takayasu arteritis by HES year, including impact of COVID-19 pandemic
+# 
+# Column 1: Description of regression model/covariate of interest
+# Column 2: Coefficient
+# Column 3: Lower bound of confidence interval 
+# Column 4: Upper bound of confidence interval 
+# Column 5: P value
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

@@ -1,0 +1,142 @@
+---
+title: "Incident cohort of people diagnosed Takayasu arteritis in England 1st April to 31st March 2023"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("odbc", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("DBI", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+
+#load data
+library(odbc)
+library(DBI)
+con <- DBI::dbConnect(odbc:::odbc(), "databricks")
+cohort = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_df_final_20240822_updated') # from 07_mix_step_2_of_3 (core table of cohort)
+lsoas_pre_adjusted_date = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_lsoa_pre_adjusted_date_final_updated') # from 18_LSOA01_impute
+lsoa_2001_2011_long = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.hds_cur_lsoa_imd_lookup_long') # Lookup table for LSOA to IMDs
+lsoa_2011_regions = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.hds_cur_lsoa_region_lookup') # Lookup table for LSOA to region
+ethnicities = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_df_eth_grouped_final_20240918_updated') # Updated list of ethnicity data
+DBI::dbDisconnect(con)
+
+ethnicities2 <- ethnicities %>%
+  select(PERSON_ID_DEID, Eth_grouped)
+```
+
+### Incident cohort
+
+```{r incidence}
+# check new ethnicity data
+# unique(ethnicities$Eth_grouped) # indicated no NAs
+
+cohort_with_ethnicities <- left_join(cohort, ethnicities2, by=c("PERSON_ID_DEID"))
+
+# Remove individuals less than 2 years at adjusted diagnosis date
+cohort_over_2 <- cohort_with_ethnicities %>%
+  mutate(sex = ifelse(SEX == 1, "Male", "Female")) %>%
+  mutate(age_group = case_when(
+    final_age <= 15 ~ "0-15",
+    final_age > 15 & final_age <= 39 ~ "16-39",
+    final_age > 39 & final_age <= 54 ~ "40-54",
+    final_age > 54 & final_age <= 69 ~ "55-69",
+    final_age > 69 & final_age <= 84 ~ "70-84",
+    final_age > 84 ~ "85-90"
+    ),
+  age_group = factor(age_group, 
+                     level=c("0-15", "16-39", "40-54", "55-69", "70-84", "85-90")
+                     )
+  ) %>%
+  mutate(HES_YEAR = ifelse(month(final_diag_date) < 4, # map to HES year
+                           paste0(as.numeric(year(final_diag_date)) - 1, 
+                                  "/", 
+                                  str_sub(sprintf("%02d", 
+                                                  as.numeric(str_sub(year(final_diag_date), 
+                                                                     start= -2))), 
+                                          start= -2)), 
+                           paste0(as.numeric(year(final_diag_date)),
+                                  "/", 
+                                  str_sub(sprintf("%02d", 
+                                                  as.numeric(str_sub(year(final_diag_date), 
+                                                                     start= -2)) + 1), 
+                                          start= -2)))) %>% 
+  filter(as.numeric(final_age) >= 2)
+
+# Lsoa/IMD linkage
+lsoas_pre_adjusted_date <- lsoas_pre_adjusted_date %>%
+  select(PERSON_ID_DEID, LSOA11_curated_pre_adjusted_date, info_LSOA11_pre_adjusted_date, 
+         LSOA01_curated_pre_adjusted_date, info_LSOA01_pre_adjusted_date)
+
+imd_mapping <- lsoa_2001_2011_long %>%
+  select(LSOA, IMD_YEAR, QUINTILE)
+
+cohort_over_2_with_diag_lsoas <- left_join(cohort_over_2, lsoas_pre_adjusted_date, by=c("PERSON_ID_DEID")) %>%
+  mutate(diagnosis_YEAR = as.numeric(as.numeric(year(final_diag_date)))) %>%
+  mutate(LSOA_inc = ifelse(diagnosis_YEAR > 2009, # previously 2010 but resulted in some failed imd linkages for people diagnosed in 2010
+                           LSOA11_curated_pre_adjusted_date,
+                           LSOA01_curated_pre_adjusted_date)) %>%
+  mutate(IMD_YEAR_inc = case_when(
+    diagnosis_YEAR <= 2002 ~ 2004,
+    diagnosis_YEAR > 2002 & diagnosis_YEAR <= 2006 ~ 2007,
+    diagnosis_YEAR > 2006 & diagnosis_YEAR <= 2009 ~ 2010,
+    diagnosis_YEAR > 2009 & diagnosis_YEAR <= 2013 ~ 2015,
+    diagnosis_YEAR > 2013 ~ 2019)
+  ) 
+
+incident_cohort <- left_join(cohort_over_2_with_diag_lsoas, imd_mapping, by=c("LSOA_inc" = "LSOA", "IMD_YEAR_inc" = "IMD_YEAR")) %>%
+  rename(imd_incidence = QUINTILE) 
+
+# Check imd linkage
+# cohort_check <- incident_cohort %>%
+#   select(PERSON_ID_DEID, final_diag_date, diagnosis_YEAR, LSOA_inc, IMD_YEAR_inc, imd_incidence) 
+# head(cohort_check) # all seemed in order
+
+# link in region
+lsoa_regions <- lsoa_2011_regions %>%
+  select(lsoa_code, region_code, region_name)
+
+# Correct known inactive LSOAs to parent for the purpose of region linkage only
+incident_cohort_LSOA_corrected <- incident_cohort %>%
+  mutate(LSOA_inc_corrected = ifelse(LSOA_inc == "E01005127", "E01033677",
+                                     ifelse(LSOA_inc == "E01018229", "E01033117",
+                                            LSOA_inc)
+                                     )
+         )
+
+incident_cohort_with_regions <- left_join(incident_cohort_LSOA_corrected, lsoa_regions, by=c("LSOA_inc_corrected" = "lsoa_code")) 
+
+# Remove non-English residents at point of diagnosis for incidence calculations
+incidence_cohort_England <- incident_cohort_with_regions %>%
+  filter(grepl("E", LSOA_inc, fixed=TRUE)) %>%
+  filter(final_diag_date > "2006-03-31") %>%
+  filter(final_diag_date < "2023-04-01") 
+
+# summary(incidence_cohort_England$final_age) - complete
+# unique(incidence_cohort_England$SEX) - complete for expected values
+# unique(incidence_cohort_England$Eth_grouped) - complete for expected values
+# NULL LSOAs are taken out when non-English ones are removed
+# IMD matching is dealt with later
+# unique(incidence_cohort_England$region_code) # no NA values post lsoa correction
+
+# Saving the cleaned table to the project area
+# write.csv2(incidence_cohort_England, "ccu075_01_M314_cohort_20240925.csv")
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

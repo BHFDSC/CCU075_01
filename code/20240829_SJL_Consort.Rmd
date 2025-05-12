@@ -1,0 +1,61 @@
+---
+title: "Information for TAK cohort CONSORT"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("odbc", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("DBI", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+```
+
+```{r consort}
+# Counts for consort
+# Some hardcoded from databricks notebook 07_mix_step_2_of_3)
+# Unrounded counts were exported for full transparency in cohort creation. Output checkers approved this alongside the contextual information below.
+
+consort_data <- data.frame(rbind(c("Unique patients with ICD-10 code M31.4 in OP", 326), 
+                                 c("Unique patients with ICD-10 code M31.4 in OP without valid NHS ID", 25),
+                                 c("Unique patients with ICD-10 code M31.4 in OP with valid NHS ID", 301), 
+                                 c("Unique patients in APC", 74875648),
+                                 c("Unique patients in OP", 79886059)
+                                 ))
+
+consort_data %>%
+  kable(booktabs=TRUE, align="l", col.names = c("Consort element",
+                                                "Count"))
+
+# write.csv2(consort_data, "ccu075_01_consort_data_20240829.csv")
+
+# Contextual information
+# Total counts to add to a consort diagram for creation of our cohort of Takayasu arteritis patients
+# 
+# Column 1: Description of the count
+# Column 2*: Number of cases
+# 
+# *Indicates unrounded rates for full, expected transparency in reporting cohort creation.
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

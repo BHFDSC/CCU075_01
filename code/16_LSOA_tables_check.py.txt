@@ -1,0 +1,125 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC
+# MAGIC # Checks on the curated LSOA tables
+# MAGIC
+# MAGIC Description: The notebook contains checks on the curated LSOA tables
+# MAGIC
+# MAGIC Authors and Reviewers: Mehrdad Mizani, Stephanie Lax
+
+# COMMAND ----------
+
+# MAGIC %run /Workspace/Shared/SHDS/common/functions
+
+# COMMAND ----------
+
+# MAGIC %run ./02_load_datasets
+
+# COMMAND ----------
+
+# HES APC df 1
+df_1_hes_apc = spark.table(f'{dbc_write}.ccu075_01_hes_apc_temp_df_1_updated')
+df_1_hes_apc = df_1_hes_apc.withColumn("2011_is_null", f.when(f.col("LSOA11_pre_TA").isNull(), f.lit(1)).otherwise(f.lit(0)))
+df_1_hes_apc = df_1_hes_apc.withColumn("2001_is_null", f.when(f.col("LSOA01_pre_TA").isNull(), f.lit(1)).otherwise(f.lit(0)))
+df_1_hes_apc = df_1_hes_apc.withColumn("identical_lsoa", f.when(f.col("LSOA01_pre_TA")==f.col("LSOA11_pre_TA"), f.lit(1)).otherwise(f.lit(0)))
+display(df_1_hes_apc)
+
+# COMMAND ----------
+
+display(df_1_hes_apc.groupBy(["2001_is_null", "2011_is_null","identical_lsoa" ]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# Any null curated LSOA2011?
+df_1_hes_apc.filter(f.col("LSOA11_curated_pre_TA").isNull()).count()
+
+# COMMAND ----------
+
+# HES OP df 1
+df_1_hes_op = spark.table(f'{dbc_write}.ccu075_01_hes_op_temp_df_1_updated')
+df_1_hes_op = df_1_hes_op.withColumn("2011_is_null", f.when(f.col("LSOA11_pre_TA").isNull(), f.lit(1)).otherwise(f.lit(0)))
+df_1_hes_op = df_1_hes_op.withColumn("2001_is_null", f.when(f.col("LSOA01_pre_TA").isNull(), f.lit(1)).otherwise(f.lit(0)))
+df_1_hes_op = df_1_hes_op.withColumn("identical_lsoa", f.when(f.col("LSOA01_pre_TA")==f.col("LSOA11_pre_TA"), f.lit(1)).otherwise(f.lit(0)))
+display(df_1_hes_op)
+
+
+# COMMAND ----------
+
+display(df_1_hes_op.groupBy(["2001_is_null", "2011_is_null","identical_lsoa" ]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# Any null curated LSOA2011?
+df_1_hes_op.filter(f.col("LSOA11_curated_pre_TA").isNull()).count()
+
+# COMMAND ----------
+
+# HES APC df 2
+df_2_hes_apc = spark.table(f'{dbc_write}.ccu075_01_hes_apc_temp_df_2_updated')
+df_2_hes_apc = df_2_hes_apc.withColumn("2011_is_null", f.when(f.col("LSOA11_pre_index_date").isNull(), f.lit(1)).otherwise(f.lit(0)))
+df_2_hes_apc = df_2_hes_apc.withColumn("2001_is_null", f.when(f.col("LSOA01_pre_index_date").isNull(), f.lit(1)).otherwise(f.lit(0)))
+df_2_hes_apc = df_2_hes_apc.withColumn("identical_lsoa", f.when(f.col("LSOA01_pre_index_date")==f.col("LSOA11_pre_index_date"), f.lit(1)).otherwise(f.lit(0)))
+display(df_2_hes_apc)
+
+# COMMAND ----------
+
+display(df_2_hes_apc.groupBy(["2001_is_null", "2011_is_null","identical_lsoa" ]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# Any null curated LSOA2011?
+df_2_hes_apc.filter(f.col("LSOA11_curated_pre_index_date").isNull()).count()
+
+# COMMAND ----------
+
+# HES OP df 2
+df_2_hes_op = spark.table(f'{dbc_write}.ccu075_01_hes_op_temp_df_2_updated')
+df_2_hes_op = df_2_hes_op.withColumn("2011_is_null", f.when(f.col("LSOA11_pre_index_date").isNull(), f.lit(1)).otherwise(f.lit(0)))
+df_2_hes_op = df_2_hes_op.withColumn("2001_is_null", f.when(f.col("LSOA01_pre_index_date").isNull(), f.lit(1)).otherwise(f.lit(0)))
+df_2_hes_op = df_2_hes_op.withColumn("identical_lsoa", f.when(f.col("LSOA01_pre_index_date")==f.col("LSOA11_pre_index_date"), f.lit(1)).otherwise(f.lit(0)))
+display(df_2_hes_op)
+
+# COMMAND ----------
+
+display(df_2_hes_op.groupBy(["2001_is_null", "2011_is_null","identical_lsoa" ]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# Any null curated LSOA2011?
+df_2_hes_op.filter(f.col("LSOA11_curated_pre_index_date").isNull()).count()
+
+# COMMAND ----------
+
+# HES APC df 3
+df_3_hes_apc = spark.table(f'{dbc_write}.ccu075_01_hes_apc_temp_df_3_updated')
+df_3_hes_apc = df_3_hes_apc.withColumn("2011_is_null", f.when(f.col("LSOA11_pre_adjusted_date").isNull(), f.lit(1)).otherwise(f.lit(0)))
+df_3_hes_apc = df_3_hes_apc.withColumn("2001_is_null", f.when(f.col("LSOA01_pre_adjusted_date").isNull(), f.lit(1)).otherwise(f.lit(0)))
+df_3_hes_apc = df_3_hes_apc.withColumn("identical_lsoa", f.when(f.col("LSOA01_pre_adjusted_date")==f.col("LSOA11_pre_adjusted_date"), f.lit(1)).otherwise(f.lit(0)))
+display(df_3_hes_apc)
+
+# COMMAND ----------
+
+display(df_3_hes_apc.groupBy(["2001_is_null", "2011_is_null","identical_lsoa" ]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# Any null curated LSOA2011?
+df_3_hes_apc.filter(f.col("LSOA11_curated_pre_adjusted_date").isNull()).count()
+
+# COMMAND ----------
+
+# HES OP df 3
+df_3_hes_op = spark.table(f'{dbc_write}.ccu075_01_hes_op_temp_df_3_updated')
+df_3_hes_op = df_3_hes_op.withColumn("2011_is_null", f.when(f.col("LSOA11_pre_adjusted_date").isNull(), f.lit(1)).otherwise(f.lit(0)))
+df_3_hes_op = df_3_hes_op.withColumn("2001_is_null", f.when(f.col("LSOA01_pre_adjusted_date").isNull(), f.lit(1)).otherwise(f.lit(0)))
+df_3_hes_op = df_3_hes_op.withColumn("identical_lsoa", f.when(f.col("LSOA01_pre_adjusted_date")==f.col("LSOA11_pre_adjusted_date"), f.lit(1)).otherwise(f.lit(0)))
+display(df_3_hes_op)
+
+# COMMAND ----------
+
+display(df_3_hes_op.groupBy(["2001_is_null", "2011_is_null","identical_lsoa" ]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# Any null curated LSOA2011
+df_3_hes_op.filter(f.col("LSOA11_curated_pre_adjusted_date").isNull()).count()

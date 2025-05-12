@@ -1,0 +1,181 @@
+---
+title: "Incidence estimates for Takayasu arteritis in England by Demographic Group: a sensitivity analysis where individuals with unknown ethnicity were assumed to be White"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+
+# Get cohort data
+incidence_cohort_England <- read.csv2("ccu075_01_M314_cohort_20240925.csv") %>%
+  mutate(Eth_modified = ifelse(Eth_grouped == "Unknown", "White", Eth_grouped))
+
+merged <- read.csv("ccu075_01_denominators_i_age_group_sex_ethnicity_20241010.csv")
+
+#unique(incidence_cohort_England$Eth_modified) - OK
+```
+
+### Incident cohort: crude rate ratio by ethnicity
+
+```{r ratios}
+# Set parameters for analyses
+CI_level <- 0.95
+rate_multiplier <- 1000000
+
+#Compile cases and denominator dataset where age is grouped
+grouped_demographics <- incidence_cohort_England %>%
+  group_by(Eth_modified, sex, age_group) %>%
+  summarise(cases = n()) %>%
+  ungroup() %>%
+  rename(ethnicity_broad = Eth_modified)
+
+merged_grouped <- full_join(grouped_demographics, merged, by=c("ethnicity_broad", "sex", "age_group")) %>%
+  mutate(cases = ifelse(is.na(cases), 0, cases))
+
+#sum(merged_grouped$combined_denominator, na.rm=TRUE) - still OK
+#sum(merged_grouped$cases) - still OK
+```
+
+### Crude odds ratios: Ethnicity
+
+```{r incidence_odds_IMD, message=FALSE}
+crude_inc_rates_by_ethnicity2 <- merged_grouped %>%
+  filter(ethnicity_broad != "Unknown") %>%
+  group_by(ethnicity_broad) %>%
+  summarise(Cases_for_calculations = ifelse(sum(cases)>50, sum(cases), #calculates using real counts where n>50
+                                            ifelse(sum(cases)>9, 5*round(sum(cases)/5,0), #calculates using counts to nearest 5 where n>9/<50
+                                                   1)), #Suppresses percentage where count is less than 10 (to 1 to enable code to parse)
+            Population=sum(combined_denominator)) 
+
+crude_inc_rates_by_ethnicity2$ethnicity_broad <- factor(crude_inc_rates_by_ethnicity2$ethnicity_broad, levels=c("White", 
+                                                                                                    "Asian", 
+                                                                                                    "Black", 
+                                                                                                    "Mixed", 
+                                                                                                    "Other"))
+
+poisson.model_ethnicity <- glm(formula = Cases_for_calculations ~ ethnicity_broad, 
+                         offset = log(Population),
+                         family = poisson(link="log"), 
+                         data = crude_inc_rates_by_ethnicity2)
+
+summary(poisson.model_ethnicity)
+
+ecm <- exp(coef(poisson.model_ethnicity))
+ci <- exp(confint(poisson.model_ethnicity))
+
+collated_crude_ORs <- data.frame(rbind(c(Group = "Asian", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="Asian")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="Asian"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="Asian"),][[2]],2)),
+                                       c(Group = "Black", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="Black")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="Black"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="Black"),][[2]],2)),
+                                       c(Group = "Mixed", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="Mixed")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="Mixed"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="Mixed"),][[2]],2)),
+                                       c(Group = "White", 
+                                         OR = 1, 
+                                         Lower_CI = NA, 
+                                         Upper_CI = NA),
+                                       c(Group = "Other", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="Other")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="Other"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="Other"),][[2]],2))
+                                 )
+                           )
+```
+
+### Adjusted odds ratios: Ethnicity
+
+```{r incidence_odds_adj, message=FALSE}
+adjusted_inc_rates_by_ethnicity <- merged_grouped %>%
+  filter(ethnicity_broad != "Unknown") %>%
+  mutate(Cases_for_calculations = ifelse(cases == 0, 1, cases)) #Suppresses percentage where count is less than 10 (to 1 to enable code to parse)
+
+adjusted_inc_rates_by_ethnicity$ethnicity_broad <- factor(adjusted_inc_rates_by_ethnicity$ethnicity_broad, levels=c("White", 
+                                                                                                    "Asian", 
+                                                                                                    "Black", 
+                                                                                                    "Mixed", 
+                                                                                                    "Other"))
+
+poisson.model_ethnicity2 <- glm(formula = Cases_for_calculations ~ ethnicity_broad + age_group + sex, 
+                         offset = log(combined_denominator),
+                         family = poisson(link="log"), 
+                         data = adjusted_inc_rates_by_ethnicity)
+
+summary(poisson.model_ethnicity2)
+
+ecm <- exp(coef(poisson.model_ethnicity2))
+ci <- exp(confint(poisson.model_ethnicity2))
+
+collated_ORs <- data.frame(rbind(collated_crude_ORs,
+                                       c(Group = "Asian*", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="Asian")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="Asian"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="Asian"),][[2]],2)),
+                                       c(Group = "Black*", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="Black")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="Black"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="Black"),][[2]],2)),
+                                       c(Group = "Mixed*", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="Mixed")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="Mixed"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="Mixed"),][[2]],2)),
+                                       c(Group = "White*", 
+                                         OR = 1, 
+                                         Lower_CI = NA, 
+                                         Upper_CI = NA),
+                                       c(Group = "Other*", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="Other")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="Other"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="Other"),][[2]],2))
+                                 )
+                           )
+```
+
+```{R export}
+#Print table
+collated_ORs %>%
+  kable(booktabs=TRUE, align="l", col.names = c("Group", 
+                       "Odds ratio", 
+                       "95% CI lower bound",
+                       "95% CI upper bound"))
+
+#write.csv(collated_ORs, "ccu075_01_M314_inc_ratios_ethnicity_SA_20241016.csv")
+
+# Contextual information
+# Crude and adjusted odds ratios for incidence of Takayasu arteritis by demographic group. Sensitivity analysis where all individuals with unknown ethnicity are assumed to be White
+# 
+# Column 1: Ethnicity. Asterisk indicates ratios adjusted for age and sex, otherwise the estimates given are crude
+# Column 2: Odds ratio of diagnosis with Takayasu arteritis within each demographic group (1 indicates reference group)
+# Column 3: Poisson 95% confidence interval lower bound
+# Column 4: Poisson 95% confidence interval upper bound
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

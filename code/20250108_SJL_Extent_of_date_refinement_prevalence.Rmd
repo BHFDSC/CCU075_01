@@ -1,0 +1,93 @@
+---
+title: "Quantifying the extent of diagnosis date refinement in an epidemiology study of Takayasu arteritis in England (prevalent cohort)"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+
+# Get cohort data
+prevalent_cohort_England <- read.csv2("ccu075_01_M314_p_cohort_20241007.csv") %>%
+  mutate(apc_post_covid_flag = ifelse(flag_hes_apc_tak == 1 & APC_m314_event_date >= "2020-03-11", 1, 0),
+         op_post_covid_flag = ifelse(flag_hes_op_tak == 1 & OP_m314_event_date >= "2020-03-11", 1, 0)) %>%
+  select(PERSON_ID_DEID, flag_hes_apc_tak, APC_m314_event_date, flag_hes_op_tak, OP_m314_event_date, APC_ICD10_CODE_date, OP_ICD10_CODE_date, OP_spec_date, final_diag_date, apc_post_covid_flag, op_post_covid_flag) %>% 
+  rowwise() %>%
+  mutate(earliest_m314 = min(APC_m314_event_date, OP_m314_event_date, na.rm=TRUE),
+         duration = floor(-as.numeric(difftime(final_diag_date, earliest_m314, units = "days"))/365.25))
+```
+
+### Overall extent of diagnosis date refinement
+
+```{r extent}
+extent_per_person <- prevalent_cohort_England %>%
+  mutate(pre_covid = ifelse(earliest_m314 < "2020-03-11", 1, 0),
+         extent_of_date_refinement = ifelse(duration == 0, "<1 year",
+                                            ifelse(duration >= 1 & duration < 3, "1-2 years",
+                                            ifelse(duration >= 3 & duration < 6, "3-5 years",
+                                            ifelse(duration >= 6 & duration < 11, "6-10 years",
+                                            ">10 years"))))) 
+
+overall <- extent_per_person %>%
+  group_by(extent_of_date_refinement) %>%
+  summarise(n=n()) %>% 
+  mutate(percentage = round(100*n/length(prevalent_cohort_England$PERSON_ID_DEID)),
+         rounded_n = 5*round(n/5),
+         group="Overall") %>%
+  select(-n)
+
+pre_covid = extent_per_person %>%
+  filter(pre_covid == 1) %>% 
+  group_by(extent_of_date_refinement) %>%
+  summarise(n=n()) %>% 
+  mutate(percentage = round(100*n/sum(extent_per_person$pre_covid)),
+         rounded_n = 5*round(n/5),
+         group="Pre_covid") %>%
+  select(-n)
+         
+post_covid = extent_per_person %>%
+  filter(pre_covid == 0) %>% 
+  group_by(extent_of_date_refinement) %>%
+  summarise(n=n()) %>% 
+  mutate(percentage = round(100*n/(length(prevalent_cohort_England$PERSON_ID_DEID) - sum(extent_per_person$pre_covid))),
+         rounded_n = 5*round(n/5),
+         group="Post_covid") %>%
+  select(-n)
+
+to_export <- rbind(overall, pre_covid, post_covid)
+
+#write.csv(to_export, "ccu075_01_Extent_of_diagnosis_date_refinement_20250108.csv")
+
+# Contextual information
+# Duration between first coding of likely symptoms of Takayasu arteritis (M31.4) and receiving a diagnosis
+# 
+# Column 1: Description of the duration between first coding of symptoms and receiving a diagnosis
+# Column 2: Percentage of cases
+# Column 3: Number of cases rounded to the nearest 5 with no counts less than 10
+# Column 4: Group indicating whether these percentages and case numbers are overall or for M31.4 diagnoses made before of after 11th March 2020
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

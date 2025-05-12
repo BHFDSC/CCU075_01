@@ -1,0 +1,80 @@
+---
+title: "Grouping of ONS population data by age, sex, and ethnicity (2022)"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("odbc", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("DBI", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+# Get denominator data
+library(odbc)
+library(DBI)
+con <- DBI::dbConnect(odbc:::odbc(), "databricks")
+denominators = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.hds_population_estimates_2021_ethnicity_age_sex')
+DBI::dbDisconnect(con)
+
+denominators_2022 <- denominators %>%
+  select(-c(geography_code, geography_name)) %>% # checked and they're all England
+  mutate(n_numeric = ifelse(n == "c", 0, as.numeric(n)),
+         age_numeric = ifelse(age == "100 or over", 99, as.numeric(age))) %>% # generates errors but output is fine
+  mutate(ethnicity_broad = case_when(
+    str_sub(ethnicity,1,5) == "Asian" ~ "Asian",
+    str_sub(ethnicity,1,5) == "Black" ~ "Black",
+    str_sub(ethnicity,1,5) == "Mixed" ~ "Mixed",
+    str_sub(ethnicity,1,5) == "White" ~ "White",
+    str_sub(ethnicity,1,5) == "Other" ~ "Other"
+  ),
+  ethnicity_broad = factor(ethnicity_broad, 
+                     level=c("Asian", "Black", "Mixed", "White", "Other")
+                     )
+  ) %>%
+  group_by(ethnicity_broad, sex, age_numeric) %>%
+    summarise(Population = sum(n_numeric)) %>%
+  ungroup() %>%
+  mutate(age_group = case_when(
+    age_numeric <= 15 ~ "0-15",
+    age_numeric > 15 & age_numeric <= 39 ~ "16-39",
+    age_numeric > 39 & age_numeric <= 54 ~ "40-54",
+    age_numeric > 54 & age_numeric <= 69 ~ "55-69",
+    age_numeric > 69 & age_numeric <= 84 ~ "70-84",
+    age_numeric > 84 ~ "85-90"
+  ),
+  age_group = factor(age_group, 
+                     level=c("0-15", "16-39", "40-54", "55-69", "70-84", "85-90")
+                     )
+  ) %>%
+  rename(age = age_numeric,
+         ethnicity = ethnicity_broad)
+
+#sum(denominators_2022$Population) #approximates regional counts
+
+# save for future
+#setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+#write.csv(denominators_2022, "ccu075_01_denominators_age_group_sex_ethnicity_20241009.csv")
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

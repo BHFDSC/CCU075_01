@@ -1,0 +1,81 @@
+---
+title: "Incidence counts for Takayasu arteritis in England by Demographic Group"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("MASS", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("lmtest", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(MASS)
+library(lmtest)
+
+setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+
+# Get cohort data
+incidence_cohort_England <- read.csv2("ccu075_01_M314_cohort_20240925.csv")
+merged <- read.csv("ccu075_01_denominators_i_age_group_sex_ethnicity_20241010.csv")
+
+# Set parameters for analyses
+CI_level <- 0.95
+rate_multiplier <- 1000000
+
+#Compile cases and denominator dataset where age is grouped
+grouped_demographics <- incidence_cohort_England %>%
+  group_by(Eth_grouped, sex, age_group) %>%
+  summarise(cases = n()) %>%
+  ungroup() %>%
+  rename(ethnicity_broad = Eth_grouped)
+
+merged_grouped <- full_join(grouped_demographics, merged, by=c("ethnicity_broad", "sex", "age_group")) 
+```
+
+### Counts relating to age and ethnicity
+
+```{r incidence_odds_eth_int, message=FALSE}
+adjusted_inc_counts_by_ethnicity <- merged_grouped %>%
+  mutate(Cases_for_counting = ifelse(is.na(cases), 0, cases),
+         combined_denominator_for_counting = ifelse(is.na(combined_denominator), 0, combined_denominator)) %>%
+  mutate(ethnicity_binary = ifelse(ethnicity_broad == "White", "White", "non-White")) %>%
+  group_by(ethnicity_binary, age_group) %>%
+  summarise(n=sum(Cases_for_counting),
+            population=sum(combined_denominator_for_counting)) %>%
+  ungroup() %>%
+  mutate(n_rounded = ifelse(n>9, 5*round(n/5, 0), "suppressed")) 
+
+adjusted_inc_counts_by_ethnicity2 <- adjusted_inc_counts_by_ethnicity[,c(1,2,4,5)]
+
+#write.csv(adjusted_inc_counts_by_ethnicity2, "ccu075_01_M314_inc_counts_ethnicity_age_sex_20250311.csv")
+
+# Contextual information
+# Counts of incident cases of Takayasu arteritis by demographic group
+# 
+# Column 1: Binary category of ethnicity
+# Column 2: Age group
+# Column 3: Population estimate (derived from publically available ONS data, therefore unrounded)
+# Column 4: Number of cases of TAK, rounded to the nearest 5 with values less than 10 suppressed
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

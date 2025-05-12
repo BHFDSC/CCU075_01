@@ -1,0 +1,388 @@
+---
+title: "Prevalence estimates for Takayasu arteritis in England by Demographic Group: repeat of previous modelling to harvest mutually adjusted age and sex coefficients"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("MASS", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("lmtest", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(MASS)
+library(lmtest)
+
+setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+
+# Get cohort and denominator data
+prevalence_cohort_England <- read.csv2("ccu075_01_M314_p_cohort_20241007.csv")
+denominators_2022 <- read.csv("ccu075_01_denominators_age_group_sex_ethnicity_20241009.csv")
+
+# Set parameters for analyses
+CI_level <- 0.95
+rate_multiplier <- 1000000
+
+grouped_demographics <- prevalence_cohort_England %>%
+  dplyr::select(-age_group) %>% # 18/02/2025 added dplyr:: to counter Error in select(., ) : unused argument ()
+  group_by(Eth_grouped, sex, age_group_index) %>%
+  summarise(cases = n()) %>%
+  ungroup() %>%
+  rename(age_group = age_group_index,
+         ethnicity = Eth_grouped)
+
+#unique(grouped_demographics$ethnicity) - no more unknowns
+
+denominators_2022_grouped <- denominators_2022 %>%
+  group_by(ethnicity, sex, age_group) %>%
+  summarise(population = sum(as.numeric(Population)))
+
+merged_grouped <- full_join(grouped_demographics, denominators_2022_grouped, by=c("ethnicity", "sex", "age_group")) %>%
+  mutate(cases = ifelse(is.na(cases), 0, cases))
+```
+
+### Checking crude prevalence rate ratios: sex
+
+```{r prevalence_odds_adj_sex, message=FALSE}
+# Resolves 0 counts to 1 to enable code to parse
+adjusted_prev_rates_by_ethnicity <- merged_grouped %>%
+  mutate(Cases_for_calculations = ifelse(cases == 0 | is.na(cases), 1, cases)) 
+
+#redo variable type for ungrouped dataset
+adjusted_prev_rates_by_ethnicity$sex <- factor(adjusted_prev_rates_by_ethnicity$sex, levels=c("Male", "Female"))                     
+
+poisson.model_sex <- glm(formula = Cases_for_calculations ~ sex, 
+                         offset = log(population),
+                         family = poisson(link="log"), 
+                         data = adjusted_prev_rates_by_ethnicity)
+
+exp(coef(poisson.model_sex)) # consistent with previous estimates; not expected to be identical because of different process for generating Cases_for_calculations
+```
+
+### Checking crude prevalence rate ratios: age
+
+```{r prevalence_odds_adj_age, message=FALSE}
+adjusted_prev_rates_by_ethnicity$age_group <- factor(adjusted_prev_rates_by_ethnicity$age_group, levels=c("16-39",
+                                                                                        "0-15",
+                                                                                        "40-54",
+                                                                                        "55-69",
+                                                                                        "70-84",
+                                                                                        "85-90"))
+
+poisson.model_age <- glm(formula = Cases_for_calculations ~ age_group, 
+                         offset = log(population),
+                         family = poisson(link="log"), 
+                         data = adjusted_prev_rates_by_ethnicity)
+
+exp(coef(poisson.model_age)) # consistent with previous estimates; not expected to be equal, as above
+```
+
+### Adjusted prevalence rate ratios: age and sex
+
+```{r prevalence_odds_adj_age, message=FALSE}
+poisson.model_sex_by_age <- glm(formula = Cases_for_calculations ~ sex + age_group, 
+                         offset = log(population),
+                         family = poisson(link="log"), 
+                         data = adjusted_prev_rates_by_ethnicity)
+
+summary(poisson.model_sex_by_age)
+
+ecm <- exp(coef(poisson.model_sex_by_age))
+ci <- exp(confint(poisson.model_sex_by_age))
+
+collated_ORs <- data.frame(rbind(c(Group = "Female (adjusted by age group)", 
+                                   OR = round(ecm[str_detect(names(ecm), pattern="Female")][[1]],2), 
+                                   Lower_CI = round(ci[str_detect(row.names(ci), pattern="Female"),][[1]],2), 
+                                   Upper_CI = round(ci[str_detect(row.names(ci), pattern="Female"),][[2]],2)),
+                                 c(Group = "0-15 (adjusted by sex)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="0-15")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="0-15"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="0-15"),][[2]],2)),
+                                 c(Group = "40-54 (adjusted by sex)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="40-54")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="40-54"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="40-54"),][[2]],2)),
+                                 c(Group = "55-69 (adjusted by sex)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="55-69")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="55-69"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="55-69"),][[2]],2)),
+                                 c(Group = "70-84 (adjusted by sex)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="70-84")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="70-84"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="70-84"),][[2]],2)),
+                                 c(Group = "85-90 (adjusted by sex)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="85-90")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="85-90"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="85-90"),][[2]],2))
+                                 ))
+```
+
+### Checking crude prevalence rate ratios: ethnicity
+
+```{r prevalence_odds_eth_check, message=FALSE}
+adjusted_prev_rates_by_ethnicity <- adjusted_prev_rates_by_ethnicity %>%
+  filter(ethnicity != "Unknown") 
+
+adjusted_prev_rates_by_ethnicity$ethnicity <- factor(adjusted_prev_rates_by_ethnicity$ethnicity, levels=c("White", 
+                                                                                                    "Asian", 
+                                                                                                    "Black", 
+                                                                                                    "Mixed", 
+                                                                                                    "Other"))
+
+poisson.model_ethnicity <- glm(formula = Cases_for_calculations ~ ethnicity, 
+                         offset = log(population),
+                         family = poisson(link="log"), 
+                         data = adjusted_prev_rates_by_ethnicity)
+
+exp(coef(poisson.model_ethnicity)) # consistent with previous estimates; not expected to be equal, as above
+```
+
+### Adjusted prevalence rate ratios: ethnicity, age and sex
+
+```{r prevalence_odds_eth, message=FALSE}
+poisson.model_ethnicity2 <- glm(formula = Cases_for_calculations ~ sex + ethnicity + age_group, 
+                         offset = log(population),
+                         family = poisson(link="log"), 
+                         data = adjusted_prev_rates_by_ethnicity)
+
+summary(poisson.model_ethnicity2)
+
+ecm <- exp(coef(poisson.model_ethnicity2))
+ci <- exp(confint(poisson.model_ethnicity2)) # consistent with previous estimates
+
+collated_ORs <- data.frame(rbind(collated_ORs,
+                                       c(Group = "Female (adjusted by age group and ethnicity)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="Female")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="Female"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="Female"),][[2]],2)),
+                                 c(Group = "0-15 (adjusted by sex and ethnicity)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="0-15")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="0-15"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="0-15"),][[2]],2)),
+                                 c(Group = "40-54 (adjusted by sex and ethnicity)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="40-54")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="40-54"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="40-54"),][[2]],2)),
+                                 c(Group = "55-69 (adjusted by sex and ethnicity)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="55-69")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="55-69"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="55-69"),][[2]],2)),
+                                 c(Group = "70-84 (adjusted by sex and ethnicity)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="70-84")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="70-84"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="70-84"),][[2]],2)),
+                                 c(Group = "85-90 (adjusted by sex and ethnicity)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="85-90")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="85-90"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="85-90"),][[2]],2)),
+                                 c(Group = "Asian (adjusted by age and sex)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="Asian")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="Asian"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="Asian"),][[2]],2)),
+                                       c(Group = "Black (adjusted by age and sex)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="Black")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="Black"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="Black"),][[2]],2)),
+                                       c(Group = "Mixed (adjusted by age and sex)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="Mixed")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="Mixed"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="Mixed"),][[2]],2)),
+                                       c(Group = "White (adjusted by age and sex)", 
+                                         OR = 1, 
+                                         Lower_CI = NA, 
+                                         Upper_CI = NA),
+                                       c(Group = "Other (adjusted by age and sex)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="Other")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="Other"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="Other"),][[2]],2))
+                                 )
+                           )
+```
+
+### Adjusted prevalence rate ratios: consideration of interaction between age and ethnicity
+
+```{r prevalence_odds_eth_int, message=FALSE}
+adjusted_prev_rates_by_ethnicity <- adjusted_prev_rates_by_ethnicity %>%
+  mutate(ethnicity_binary = ifelse(ethnicity == "White", 1, 0)) 
+
+## model fit with interaction
+poisson.model_ethnicity3 <- glm(formula = Cases_for_calculations ~ sex + ethnicity_binary * age_group, 
+                         offset = log(population),
+                         family = poisson(link="log"), 
+                         data = adjusted_prev_rates_by_ethnicity)
+
+summary(poisson.model_ethnicity3)
+
+# Get coefficients
+ecm <- exp(coef(poisson.model_ethnicity3))
+ci <- exp(confint(poisson.model_ethnicity3))
+
+# Remove interaction coefficients to get only the adjusted age- and sex-specific coefficients for the non-White individuals
+other_ecm <- ecm[!grepl(":", names(ecm))]
+other_ci <- ci[!grepl(":", rownames(ci)),]
+
+collated_ORs <- data.frame(rbind(collated_ORs,
+                                       c(Group = "Female (adjusted by age * ethnicity)", 
+                                         OR = round(other_ecm[str_detect(names(other_ecm), pattern="Female")][[1]],2), 
+                                         Lower_CI = round(other_ci[str_detect(row.names(other_ci), pattern="Female"),][[1]],2), 
+                                         Upper_CI = round(other_ci[str_detect(row.names(other_ci), pattern="Female"),][[2]],2)),
+                                 c(Group = "0-15 (non-White only; adjusted by sex)", 
+                                         OR = round(other_ecm[str_detect(names(other_ecm), pattern="0-15")][[1]],2), 
+                                         Lower_CI = round(other_ci[str_detect(row.names(other_ci), pattern="0-15"),][[1]],2), 
+                                         Upper_CI = round(other_ci[str_detect(row.names(other_ci), pattern="0-15"),][[2]],2)),
+                                 c(Group = "40-54 (non-White only; adjusted by sex)", 
+                                         OR = round(other_ecm[str_detect(names(other_ecm), pattern="40-54")][[1]],2), 
+                                         Lower_CI = round(other_ci[str_detect(row.names(other_ci), pattern="40-54"),][[1]],2), 
+                                         Upper_CI = round(other_ci[str_detect(row.names(other_ci), pattern="40-54"),][[2]],2)),
+                                 c(Group = "55-69 (non-White only; adjusted by sex)", 
+                                         OR = round(other_ecm[str_detect(names(other_ecm), pattern="55-69")][[1]],2), 
+                                         Lower_CI = round(other_ci[str_detect(row.names(other_ci), pattern="55-69"),][[1]],2), 
+                                         Upper_CI = round(other_ci[str_detect(row.names(other_ci), pattern="55-69"),][[2]],2)),
+                                 c(Group = "70-84 (non-White only; adjusted by sex)", 
+                                         OR = round(other_ecm[str_detect(names(other_ecm), pattern="70-84")][[1]],2), 
+                                         Lower_CI = round(other_ci[str_detect(row.names(other_ci), pattern="70-84"),][[1]],2), 
+                                         Upper_CI = round(other_ci[str_detect(row.names(other_ci), pattern="70-84"),][[2]],2)),
+                                 c(Group = "85-90 (non-White only; adjusted by sex)", 
+                                         OR = round(other_ecm[str_detect(names(other_ecm), pattern="85-90")][[1]],2), 
+                                         Lower_CI = round(other_ci[str_detect(row.names(other_ci), pattern="85-90"),][[1]],2), 
+                                         Upper_CI = round(other_ci[str_detect(row.names(other_ci), pattern="85-90"),][[2]],2))
+                                 )
+                           )
+
+# Then, to get the age- and sex-specific coefficients for the White individuals, we need use a recoded version of the binary ethnicity variable
+adjusted_prev_rates_by_ethnicity <- adjusted_prev_rates_by_ethnicity %>%
+  mutate(ethnicity_binary2 = ifelse(ethnicity == "White", 0, 1)) 
+
+## model fit without interaction
+poisson.model_ethnicity4 <- glm(formula = Cases_for_calculations ~ sex + ethnicity_binary2 * age_group, 
+                         offset = log(population),
+                         family = poisson(link="log"), 
+                         data = adjusted_prev_rates_by_ethnicity)
+
+summary(poisson.model_ethnicity4)
+
+# Get coefficients
+ecm <- exp(coef(poisson.model_ethnicity4))
+ci <- exp(confint(poisson.model_ethnicity4))
+
+# Remove interaction coefficients to get only the adjusted age- and sex-specific coefficients for the White individuals
+white_ecm <- ecm[!grepl(":", names(ecm))]
+white_ci <- ci[!grepl(":", rownames(ci)),]
+
+collated_ORs <- data.frame(rbind(collated_ORs,
+                                       c(Group = "0-15 (White only; adjusted by sex)", 
+                                         OR = round(white_ecm[str_detect(names(white_ecm), pattern="0-15")][[1]],2), 
+                                         Lower_CI = round(white_ci[str_detect(row.names(white_ci), pattern="0-15"),][[1]],2), 
+                                         Upper_CI = round(white_ci[str_detect(row.names(white_ci), pattern="0-15"),][[2]],2)),
+                                 c(Group = "40-54 (White only; adjusted by sex)", 
+                                         OR = round(white_ecm[str_detect(names(white_ecm), pattern="40-54")][[1]],2), 
+                                         Lower_CI = round(white_ci[str_detect(row.names(white_ci), pattern="40-54"),][[1]],2), 
+                                         Upper_CI = round(white_ci[str_detect(row.names(white_ci), pattern="40-54"),][[2]],2)),
+                                 c(Group = "55-69 (White only; adjusted by sex)", 
+                                         OR = round(white_ecm[str_detect(names(white_ecm), pattern="55-69")][[1]],2), 
+                                         Lower_CI = round(white_ci[str_detect(row.names(white_ci), pattern="55-69"),][[1]],2), 
+                                         Upper_CI = round(white_ci[str_detect(row.names(white_ci), pattern="55-69"),][[2]],2)),
+                                 c(Group = "70-84 (White only; adjusted by sex)", 
+                                         OR = round(white_ecm[str_detect(names(white_ecm), pattern="70-84")][[1]],2), 
+                                         Lower_CI = round(white_ci[str_detect(row.names(white_ci), pattern="70-84"),][[1]],2), 
+                                         Upper_CI = round(white_ci[str_detect(row.names(white_ci), pattern="70-84"),][[2]],2)),
+                                 c(Group = "85-90 (White only; adjusted by sex)", 
+                                         OR = round(white_ecm[str_detect(names(white_ecm), pattern="85-90")][[1]],2), 
+                                         Lower_CI = round(white_ci[str_detect(row.names(white_ci), pattern="85-90"),][[1]],2), 
+                                         Upper_CI = round(white_ci[str_detect(row.names(white_ci), pattern="85-90"),][[2]],2))
+                                 )
+                           )
+
+# checked sex coefficient was the same between the two interaction models
+```
+
+### Adjusted prevalence rate ratios: considering using negative binomial
+
+```{r interaction2}
+### I checked for overdispersion in the final poisson model (ratio of residual deviance to degrees of freedom for the residuals should be 1), which may cause incorrect small standard errors and p-values of model coefficients. > 1 means overdispersion; Cameron and Trivedi 1990 suggest greater than 2 may require statistical intervention)
+
+# poisson.model_ethnicity3$deviance/poisson.model_ethnicity3$df.residual gave < 2, so I did not compare to model fitted with negative binomial.
+# plot(poisson.model_ethnicity3) residuals/predicted and root-standardised Pearson residuals plots weren't too bad, QQ plot not quite so good as for incidence.
+```
+
+```{R export}
+#Print table
+collated_ORs %>%
+  kable(booktabs=TRUE, align="l", col.names = c("Group", 
+                       "Prevalence rate ratio", 
+                       "95% CI lower bound",
+                       "95% CI upper bound"))
+
+#write.csv(collated_ORs, "ccu075_01_M314_prev_ratios_ethnicity_age_sex_20250203.csv")
+
+# Contextual information
+# Adjusted prevalence rate ratios for incidence of Takayasu arteritis by demographic group. 
+# 
+# Column 1: Demographic group relating to the specific prevalence rate ratio, with details of the model adjustments in parentheses.
+# Column 2: Prevalence rate ratio of diagnosis with Takayasu arteritis within each demographic group (1 indicates reference group)
+# Column 3: Poisson 95% confidence interval lower bound
+# Column 4: Poisson 95% confidence interval upper bound
+```
+
+### Likelihood ratio test (added 18/02/2025)
+
+```{r lrtest}
+## The following is to extract the p value for interaction using lrtest
+pval_model3v2 <- round(lrtest(poisson.model_ethnicity3, poisson.model_ethnicity2)$`Pr(>Chisq)`[[2]],3)
+
+# Compare to a simpler model i.e., sex + ethnicity_binary + age_group
+poisson.model_ethnicity5 <- glm(formula = Cases_for_calculations ~ sex + ethnicity_binary + age_group, 
+                         offset = log(population),
+                         family = poisson(link="log"), 
+                         data = adjusted_prev_rates_by_ethnicity)
+
+summary(poisson.model_ethnicity5)
+
+# Get coefficients
+ecm <- exp(coef(poisson.model_ethnicity5)) # age- and sex-specific PRRs are consistent
+ci <- exp(confint(poisson.model_ethnicity5))
+
+options(scipen=999) # to turn off scientific notation; reset using scipen=0
+
+pval_model3v5 <- round(lrtest(poisson.model_ethnicity3, poisson.model_ethnicity5)$`Pr(>Chisq)`[[2]],1)
+
+pvals <- data.frame(rbind(c("Interaction model versus sex + ethnicity + age_group", pval_model3v2), 
+                                 c("Interaction model versus sex + ethnicity_binary + age_group", pval_model3v5)
+                                
+))
+
+pvals %>%
+  kable(booktabs=TRUE, align="l", col.names = c("Comparison",
+                                                "P value"))
+
+# write.csv(pvals, "ccu075_01_lrtest_pvals_prevalence_20250218.csv")
+
+# Contextual information
+# P values from likelihood ratio tests comparing different parameterisations of Poisson models for Takayasu arteritis prevalence rate ratios. Interaction model = sex + ethnicity_binary + age_group
+# 
+# Column 1: Description of the comparison
+# Column 2: P value
+# 
+# This export does not contain count or identifiable data
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

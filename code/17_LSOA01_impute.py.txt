@@ -1,0 +1,343 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC
+# MAGIC # Code to impute missing LSOA01
+# MAGIC
+# MAGIC Description: The notebook imputes (locates elsewhere) missing LSOA01 data for the TAK cohort
+# MAGIC
+# MAGIC Authors and Reviewers: Mehrdad Mizani, Stephanie Lax
+
+# COMMAND ----------
+
+# MAGIC %run /Workspace/Shared/SHDS/common/functions
+
+# COMMAND ----------
+
+# MAGIC %run ./02_load_datasets
+
+# COMMAND ----------
+
+#display(spark.table(f'{dbc_write}.ccu75_01_region_age_sex_2006_2022'))
+
+# COMMAND ----------
+
+df_mix = spark.table(f'{dbc_write}.ccu075_01_joined_table_2_of_3_20240725_updated')
+
+# COMMAND ----------
+
+df_mix.count()
+
+# COMMAND ----------
+
+df_mix.columns
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Make a table from HES APC, HES OP, and HES AE for LSOA01 imputation
+
+# COMMAND ----------
+
+# MAke a table from HES APC, HES OP, and HES AE for LSOA01 imputation
+cohort_id = df_mix.select(["PERSON_ID_DEID"])
+lsoa01_hes_apc = f.broadcast(cohort_id).join(df_hes_apc.select(["PERSON_ID_DEID", "LSOA01", "EPISTART"]).withColumnRenamed("EPISTART", "event_date").filter(f.col("event_date").isNotNull()), on="PERSON_ID_DEID", how="inner")
+lsoa01_hes_op = f.broadcast(cohort_id).join(df_hes_op.select(["PERSON_ID_DEID", "LSOA01", "APPTDATE"]).withColumnRenamed("APPTDATE", "event_date").filter(f.col("event_date").isNotNull()), on="PERSON_ID_DEID", how="inner" )
+lsoa01_hes_ae = f.broadcast(cohort_id).join(df_hes_ae.select(["PERSON_ID_DEID", "LSOA01", "ARRIVALDATE"]).withColumnRenamed("ARRIVALDATE", "event_date").filter(f.col("event_date").isNotNull()), on="PERSON_ID_DEID", how="inner" )
+lsoa01_all = lsoa01_hes_apc.union(lsoa01_hes_op).union(lsoa01_hes_ae).dropDuplicates(["PERSON_ID_DEID", "LSOA01", "event_date"])
+
+# COMMAND ----------
+
+# Save a temporary checkpoint
+lsoa01_all.write.mode('overwrite').saveAsTable(f'{dbc_write}.ccu075_01_lsoa01_apc_op_ae_cohort_id_only_updated')
+lsoa01_all = spark.table(f'{dbc_write}.ccu075_01_lsoa01_apc_op_ae_cohort_id_only_updated')
+
+# COMMAND ----------
+
+display(lsoa01_all.limit(5))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # df1 (pre-TA)
+# MAGIC
+# MAGIC Only HES APC has null LSOA01
+
+# COMMAND ----------
+
+# HES APC df 1
+df_1_hes_apc = spark.table(f'{dbc_write}.ccu075_01_hes_apc_temp_df_1_updated')
+display(df_1_hes_apc.limit(5))
+
+# COMMAND ----------
+
+# HES OP df 1
+df_1_hes_op = spark.table(f'{dbc_write}.ccu075_01_hes_op_temp_df_1_updated')
+#display(df_1_hes_op.limit(5))
+
+# COMMAND ----------
+
+cohort_id = df_mix.select(["PERSON_ID_DEID", "APC_m314_event_date"])
+cohort_id.count()
+
+# COMMAND ----------
+
+df_1_apc_null = df_1_hes_apc.filter(f.col("LSOA01_pre_TA").isNull()).join(cohort_id, on= "PERSON_ID_DEID", how="left")
+display(df_1_apc_null)
+
+# COMMAND ----------
+
+df_1_apc_null_imputed = df_1_apc_null.join(lsoa01_all, on= "PERSON_ID_DEID", how="left" )
+# drop any null LSOA01
+df_1_apc_null_imputed = df_1_apc_null_imputed.filter(f.col("LSOA01").isNotNull())
+
+# COMMAND ----------
+
+# IDs with imputable LSOA01 
+display(df_1_apc_null_imputed.select("PERSON_ID_DEID").distinct())
+
+# COMMAND ----------
+
+# Find the closest to the TA event date from before or after the TA event date
+df_1_apc_null_imputed = df_1_apc_null_imputed.withColumn("abs_date_diff", f.abs(f.datediff(f.col("event_date"), f.col("APC_m314_event_date"))))
+
+# COMMAND ----------
+
+df_1_apc_null_imputed.filter(f.col("abs_date_diff").isNull()).count()
+
+# COMMAND ----------
+
+# Keep the closest LSOA01
+w = Window.partitionBy("PERSON_ID_DEID").orderBy(f.col("abs_date_diff").asc())
+df_1_apc_null_imputed = df_1_apc_null_imputed.withColumn("rank", f.row_number().over(w))
+df_1_apc_null_imputed = df_1_apc_null_imputed.filter(f.col("rank")==1).drop("rank")
+
+# COMMAND ----------
+
+display(df_1_apc_null_imputed)
+
+# COMMAND ----------
+
+# DBTITLE 1,h
+df_1_apc_null_imputed = df_1_apc_null_imputed.select(["PERSON_ID_DEID", "LSOA01"])
+
+# COMMAND ----------
+
+df_1_hes_apc.columns
+
+# COMMAND ----------
+
+df_1_apc_null_imputed.columns
+
+# COMMAND ----------
+
+df_1_hes_op.columns
+
+# COMMAND ----------
+
+df_1_imputed = df_1_hes_apc.union(df_1_hes_op).join(df_1_apc_null_imputed, on="PERSON_ID_DEID", how= "left")
+df_1_imputed = df_1_imputed.withColumn("LSOA01_curated_pre_TA", f.when(f.col("LSOA01").isNotNull(), f.col("LSOA01")).otherwise(f.col("LSOA01_pre_TA"))).withColumn("info_LSOA01_pre_TA", f.when(f.col("LSOA01").isNotNull(), f.lit("Imputed LOSA01")).otherwise(f.when(f.col("LSOA01_pre_TA").isNull(), f.lit("Missing LSOA01")).otherwise(f.lit("Valid LSOA01")))).drop("LSOA01").withColumnRenamed("info_LSOA_pre_TA", "info_LSOA11_pre_TA")
+
+# COMMAND ----------
+
+display(df_1_imputed)
+
+# COMMAND ----------
+
+display(df_1_imputed.groupBy("info_LSOA01_pre_TA").agg(f.count("*")))
+
+# COMMAND ----------
+
+display(df_1_imputed.filter(~f.col("info_LSOA01_pre_TA").startswith("Valid")))
+
+# COMMAND ----------
+
+df_1_imputed.write.mode('overwrite').saveAsTable(f'{dbc_write}.ccu075_01_lsoa_pre_TA_final_updated')
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # df2 (pre-index-date)
+# MAGIC
+# MAGIC There are null LSOA01 in both HES APC and OP
+
+# COMMAND ----------
+
+# HES APC df 2
+df_2_hes_apc = spark.table(f'{dbc_write}.ccu075_01_hes_apc_temp_df_2_updated')
+
+#display(df_2_hes_apc.limit(5))
+
+# COMMAND ----------
+
+# HES OP df 2
+df_2_hes_op = spark.table(f'{dbc_write}.ccu075_01_hes_op_temp_df_2_updated')
+
+#display(df_2_hes_op.limit(5))
+
+# COMMAND ----------
+
+df_2_both = df_2_hes_apc.union(df_2_hes_op)
+
+# COMMAND ----------
+
+# for both
+cohort_id = df_mix.select(["PERSON_ID_DEID"]).withColumn("index_date", f.to_date(f.lit("2022-07-01")) )
+#cohort_id.count()
+
+# COMMAND ----------
+
+df_2_both_null = df_2_both.filter(f.col("LSOA01_pre_index_date").isNull()).join(cohort_id, on= "PERSON_ID_DEID", how="left")
+display(df_2_both_null)
+
+# COMMAND ----------
+
+df_2_both_null_imputed = df_2_both_null.join(lsoa01_all, on= "PERSON_ID_DEID", how="left" )
+# drop any null LSOA01
+df_2_both_null_imputed = df_2_both_null_imputed.filter(f.col("LSOA01").isNotNull())
+
+# COMMAND ----------
+
+# IDs with imputable LSOA01 
+display(df_2_both_null_imputed.select("PERSON_ID_DEID").distinct())
+
+# COMMAND ----------
+
+# Find the closest to the index  date from before or after the index date
+df_2_both_null_imputed = df_2_both_null_imputed.withColumn("abs_date_diff", f.abs(f.datediff(f.col("event_date"), f.col("index_date"))))
+
+# COMMAND ----------
+
+df_2_both_null_imputed.filter(f.col("abs_date_diff").isNull()).count()
+
+# COMMAND ----------
+
+# Keep the closest LSOA01
+w = Window.partitionBy("PERSON_ID_DEID").orderBy(f.col("abs_date_diff").asc())
+df_2_both_null_imputed = df_2_both_null_imputed.withColumn("rank", f.row_number().over(w))
+df_2_both_null_imputed = df_2_both_null_imputed.filter(f.col("rank")==1).drop("rank")
+
+# COMMAND ----------
+
+display(df_2_both_null_imputed)
+
+# COMMAND ----------
+
+df_2_both_null_imputed = df_2_both_null_imputed.select(["PERSON_ID_DEID", "LSOA01"])
+
+# COMMAND ----------
+
+df_2_imputed = df_2_hes_apc.union(df_2_hes_op).join(df_2_both_null_imputed, on="PERSON_ID_DEID", how= "left")
+df_2_imputed = df_2_imputed.withColumn("LSOA01_curated_pre_index_date", f.when(f.col("LSOA01").isNotNull(), f.col("LSOA01")).otherwise(f.col("LSOA01_pre_index_date"))).withColumn("info_LSOA01_pre_index_date", f.when(f.col("LSOA01").isNotNull(), f.lit("Imputed LOSA01")).otherwise(f.when(f.col("LSOA01_pre_index_date").isNull(), f.lit("Missing LSOA01")).otherwise(f.lit("Valid LSOA01")))).drop("LSOA01").withColumnRenamed("info_LSOA_pre_index_date", "info_LSOA11_pre_index_date")
+
+# COMMAND ----------
+
+display(df_2_imputed)
+
+# COMMAND ----------
+
+display(df_2_imputed.groupBy("info_LSOA01_pre_index_date").agg(f.count("*")))
+
+# COMMAND ----------
+
+display(df_2_imputed.filter(~f.col("info_LSOA01_pre_index_date").startswith("Valid")))
+
+# COMMAND ----------
+
+df_2_imputed.write.mode('overwrite').saveAsTable(f'{dbc_write}.ccu075_01_lsoa_pre_index_date_final_updated')
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+# MAGIC # df3 (pre-adjusted-date)
+# MAGIC
+# MAGIC - There are null LSOA01 in HES APC 
+
+# COMMAND ----------
+
+# HES APC df 3
+df_3_hes_apc = spark.table(f'{dbc_write}.ccu075_01_hes_apc_temp_df_3_updated')
+
+display(df_1_hes_apc.limit(5))
+
+# COMMAND ----------
+
+# HES OP df 3
+df_3_hes_op = spark.table(f'{dbc_write}.ccu075_01_hes_op_temp_df_3_updated')
+
+#display(df_3_hes_op.limit(5))
+
+# COMMAND ----------
+
+df_3_both = df_3_hes_apc.union(df_3_hes_op)
+
+# COMMAND ----------
+
+df_mix.columns
+
+# COMMAND ----------
+
+# df3 has null LSOA01_pre_adjusted_date in HES APC only
+cohort_id = df_mix.select(["PERSON_ID_DEID", "adjusted_diag_date"])
+cohort_id.count()
+
+# COMMAND ----------
+
+df_3_both_null = df_3_both.filter(f.col("LSOA01_pre_adjusted_date").isNull()).join(cohort_id, on= "PERSON_ID_DEID", how="left")
+display(df_3_both_null)
+
+# COMMAND ----------
+
+df_3_both_null_imputed = df_3_both_null.join(lsoa01_all, on= "PERSON_ID_DEID", how="left" )
+# drop any null LSOA01
+df_3_both_null_imputed = df_3_both_null_imputed.filter(f.col("LSOA01").isNotNull())
+
+# COMMAND ----------
+
+# IDs with imputable LSOA01 
+display(df_3_both_null_imputed.select("PERSON_ID_DEID").distinct())
+
+# COMMAND ----------
+
+# Find the closest to the adjusted  date from before or after the adjusted date
+df_3_both_null_imputed = df_3_both_null_imputed.withColumn("abs_date_diff", f.abs(f.datediff(f.col("event_date"), f.col("adjusted_diag_date"))))
+
+# COMMAND ----------
+
+df_3_both_null_imputed.filter(f.col("abs_date_diff").isNull()).count()
+
+# COMMAND ----------
+
+# Keep the closest LSOA01
+w = Window.partitionBy("PERSON_ID_DEID").orderBy(f.col("abs_date_diff").asc())
+df_3_both_null_imputed = df_3_both_null_imputed.withColumn("rank", f.row_number().over(w))
+df_3_both_null_imputed = df_3_both_null_imputed.filter(f.col("rank")==1).drop("rank")
+
+# COMMAND ----------
+
+display(df_3_both_null_imputed)
+
+# COMMAND ----------
+
+df_3_both_null_imputed = df_3_both_null_imputed.select(["PERSON_ID_DEID", "LSOA01"])
+
+# COMMAND ----------
+
+df_3_imputed = df_3_hes_apc.union(df_3_hes_op).join(df_3_both_null_imputed, on="PERSON_ID_DEID", how= "left")
+df_3_imputed = df_3_imputed.withColumn("LSOA01_curated_pre_adjusted_date", f.when(f.col("LSOA01").isNotNull(), f.col("LSOA01")).otherwise(f.col("LSOA01_pre_adjusted_date"))).withColumn("info_LSOA01_pre_adjusted_date", f.when(f.col("LSOA01").isNotNull(), f.lit("Imputed LOSA01")).otherwise(f.when(f.col("LSOA01_pre_adjusted_date").isNull(), f.lit("Missing LSOA01")).otherwise(f.lit("Valid LSOA01")))).drop("LSOA01").withColumnRenamed("info_LSOA_pre_adjusted_date", "info_LSOA11_pre_adjusted_date")
+
+# COMMAND ----------
+
+display(df_3_imputed)
+
+# COMMAND ----------
+
+display(df_3_imputed.groupBy("info_LSOA01_pre_adjusted_date").agg(f.count("*")))
+
+# COMMAND ----------
+
+display(df_3_imputed.filter(~f.col("info_LSOA01_pre_adjusted_date").startswith("Valid")))
+
+# COMMAND ----------
+
+df_3_imputed.write.mode('overwrite').saveAsTable(f'{dbc_write}.ccu075_01_lsoa_pre_adjusted_date_final_updated')

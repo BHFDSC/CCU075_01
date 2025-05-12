@@ -1,0 +1,236 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC
+# MAGIC # Extract ICD10 in HES OP
+# MAGIC
+# MAGIC Description: Extraction of specific ICD-10 records from HES OP
+# MAGIC
+# MAGIC Authors and Reviewers: Mehrdad Mizani, Stephanie Lax
+# MAGIC
+# MAGIC General plan:  
+# MAGIC - TA in HES APC
+# MAGIC - TA in HES OP 
+# MAGIC - mix the first two 
+# MAGIC - ICD10 in HES APC 
+# MAGIC - ICD10 in HES OP (This notebook)
+# MAGIC - Specialty in HES OP
+# MAGIC - Sociodemographic
+# MAGIC
+# MAGIC
+# MAGIC 1.  Include all HES APC episodes with ICD-10 M31.4 in any diagnosis position.
+# MAGIC   -  Exclude any records which cannot be traced to a valid NHS number. 
+# MAGIC 2.  Include all HES OP episodes with ICD-10 M31.4 in any diagnosis position.
+# MAGIC   - Exclude any records which cannot be traced to a valid NHS number. 
+# MAGIC 3. Extract the occurence of the following ICD-10 codes in HES APC for TA patients (either in HES APC or HES OP)
+# MAGIC | Code | â€‚â€‚Type | â€‚â€‚Description| 
+# MAGIC |--|--|--|
+# MAGIC | I351â€‚|â€‚ICD-10 |â€‚Aortic (valve) insufficiency |
+# MAGIC | I652â€‚|â€‚ICD-10â€‚|â€‚â€‚â€‚â€‚Occlusion and stenosis of carotid artery |
+# MAGIC | I712â€‚| ICD-10â€‚â€‚â€‚| â€‚â€‚â€‚â€‚Thoracic aortic aneurysm, without mention of ruptureâ€‚| 
+# MAGIC | I771â€‚|â€‚ICD-10â€‚â€‚â€‚â€‚|â€‚â€‚Stricture of artery|
+# MAGIC | I776â€‚|â€‚ICD-10â€‚â€‚â€‚|â€‚â€‚â€‚Arteritis, unspecified|
+# MAGIC |M316â€‚|â€‚ICD-10â€‚â€‚â€‚|â€‚â€‚â€‚Other giant cell arteritis|
+# MAGIC |Z512â€‚|â€‚ICD-10â€‚â€‚â€‚|â€‚â€‚â€‚Other chemotherapy|
+# MAGIC |Z958â€‚|â€‚ICD-10â€‚â€‚â€‚â€‚|â€‚â€‚Presence of other cardiac and vascular implants and grafts|
+# MAGIC
+# MAGIC 4. Extract the occurence of the ICD-10 codes in HES OP for TA patients (either in HES APC or HES OP)
+# MAGIC 5. Extract the earliest attendance for rheumatology (410), renal medicine (361) or vascular surgery (107) under MAINSPEF/TRETSPEF in HES OP
+# MAGIC 6.  We will describe the cohort by
+# MAGIC   - age (EPISTART - MYDOB)
+# MAGIC   - sex (SEX)
+# MAGIC   - ethnicity (ETHNOS; the most frequent recorded ethnicity or the most recent used if two occurred equally).
+# MAGIC   - IMD mapped from either LSOA01, LSOA11, whichever is closest to the date of diagnosis. 
+# MAGIC 7. Date of death will be obtained through linkage to the Civil Registration Deaths dataset.
+# MAGIC 8. Final date and age adjustment (and exclusion based on <2 years old)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load functions
+# MAGIC
+# MAGIC Note: these functions will be updated in the nead future
+
+# COMMAND ----------
+
+# MAGIC %run /Workspace/Shared/SHDS/common/functions
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load the datasets and parameters from the previous netobook
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %run ./02_load_datasets
+
+# COMMAND ----------
+
+print(db)
+print(db_corporate)
+print(df_byod)
+print(dbc)
+print(dbc_write)
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load  the last table from 03_mix_TAK_APC_OP notebook
+
+# COMMAND ----------
+
+df_tak = spark.table(f'{dbc_write}.ccu075_01_tak_apc_op_mm_20240725')
+
+
+# COMMAND ----------
+
+display(df_tak.limit(10))
+
+# COMMAND ----------
+
+count_var(df_tak, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+display(df_tak.groupBy(["flag_hes_apc_tak","flag_hes_op_tak"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Extract ICD10 from HES OP
+
+# COMMAND ----------
+
+columns = ['name', 'terminology', 'CODE', 'term']
+pheno_ta_hes = [('TA_HES','ICD10','I351','Aortic (valve) insufficiency'),
+('TA_HES','ICD10','I652','Occlusion and stenosis of carotid artery'),
+('TA_HES','ICD10','I712','Thoracic aortic aneurysm, without mention of rupture'),
+('TA_HES','ICD10','I771','Stricture of artery'),
+('TA_HES','ICD10','I776','Arteritis, unspecified'),
+('TA_HES','ICD10','M316','Other giant cell arteritis'),
+('TA_HES','ICD10','Z512','Other chemotherapy'),
+('TA_HES','ICD10','Z958','Presence of other cardiac and vascular implants and grafts')]
+df_codelist = spark.createDataFrame(pheno_ta_hes, columns)
+display(df_codelist)
+
+# COMMAND ----------
+
+# Make a clean HES OP table in long format for phenotype extraction
+
+df_hes_op_sel = df_hes_op.filter(f.col("PERSON_ID_DEID").isNotNull()).\
+    filter(f.col("APPTDATE").isNotNull()).\
+        select(["PERSON_ID_DEID", "APPTDATE",  "PROCODE3","PROCODE5",  
+                 f.split("DIAG_4_CONCAT", ",").alias("DIAG_4_ARRAY")])
+
+# COMMAND ----------
+
+df_long_4 = df_hes_op_sel.select("PERSON_ID_DEID", "APPTDATE",  "PROCODE3","PROCODE5",f.posexplode("DIAG_4_ARRAY").alias("DIAG_POSITION", "CODE")).\
+    withColumn("DIAG_DIGITS", f.lit(4)).withColumn("DIAG_POSITION", f.expr("DIAG_POSITION + 1")).\
+    withColumn("CODE", f.regexp_replace("CODE", r"[.,\-\s]", "")).\
+    filter((f.col("CODE").isNotNull()) & (f.col("CODE") != ""))
+display(df_long_4.limit(200))
+
+# COMMAND ----------
+
+# Join with the codelist
+
+df_join_hes = df_long_4.join(df_codelist, on= ["CODE"], how= "inner")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC  Strategy: 
+# MAGIC  - Load the dob_op (DOB from HES OP)
+# MAGIC  - Join with  HES OP
+# MAGIC  - Drop records with Epistart < dob_apc_op (if any)
+# MAGIC  - After QC, keep the minimum date per person
+# MAGIC  - Also keep PROCODE3 and PROCODE5 
+# MAGIC  - add a flag
+# MAGIC  - Create the age at HES OP ICD10 event date
+
+# COMMAND ----------
+
+# DOB associated with TAK in HES OP (for quality control of ICD10 event dates)
+df_dob_hes_tak = df_tak.filter(f.col("flag_hes_op_tak")==1).select(["PERSON_ID_DEID", "dob_apc_op"])
+
+# COMMAND ----------
+
+df_join_hes_qc = df_dob_hes_tak.join(df_join_hes, on= "PERSON_ID_DEID", how="left") 
+
+# COMMAND ----------
+
+# any APPTDATE < birthdate?
+print(df_join_hes_qc.filter(f.col("APPTDATE")< f.col("dob_apc_op")).count())
+
+# COMMAND ----------
+
+# filter these out (if any)
+df_join_hes_qc = df_join_hes_qc.filter(f.col("APPTDATE")>=f.col("dob_apc_op"))
+
+# COMMAND ----------
+
+# Keep the minimum APPTDATE 
+w_1 = Window.partitionBy("PERSON_ID_DEID").orderBy(f.col("APPTDATE").asc())
+df_join_hes_qc = df_join_hes_qc.withColumn("epi_order", f.row_number().over(w_1))
+df_first_event = df_join_hes_qc.filter(f.col("epi_order")==1)
+
+# COMMAND ----------
+
+display(df_first_event.limit(10)) 
+
+# COMMAND ----------
+
+df_first_event.filter(f.col("APPTDATE").isNull()).count()
+
+# COMMAND ----------
+
+# Select columns, rename APPTDATE, and join back with df_cohort
+df_first_event_sel = df_first_event.select(["PERSON_ID_DEID", "APPTDATE", "CODE", "PROCODE3", "PROCODE5"]).\
+    withColumnRenamed("APPTDATE", "OP_ICD10_CODE_date").\
+        withColumnRenamed("CODE", "OP_ICD10_code").\
+            withColumnRenamed("PROCODE3", "OP_ICD10_PROCODE3").\
+                withColumnRenamed("PROCODE5", "OP_ICD10_PROCODE5")
+
+
+df_first_event_sel = df_first_event_sel.withColumn("flag_icd10_hes_op", f.lit(1))
+
+# COMMAND ----------
+
+df_first_event_sel.filter(f.col("OP_ICD10_CODE_date").isNull()).count()
+
+# COMMAND ----------
+
+df_out  = df_tak.select("PERSON_ID_DEID", "dob_apc_op").join(df_first_event_sel,
+                             on= ["PERSON_ID_DEID"], how="left")
+# age at ICD10 event date (we will select the first diagnosis later)
+df_out = df_out.withColumn("OP_age_ICD10", f.floor(
+    f.datediff(
+        f.col("OP_ICD10_CODE_date"), f.col("dob_apc_op")
+    )/365.25
+))
+df_out = df_out.drop("dob_apc_op")
+
+df_out = df_out.fillna({"flag_icd10_hes_op":0})                            
+display(df_out.limit(5))
+
+# COMMAND ----------
+
+df_out.count()
+
+# COMMAND ----------
+
+display(df_out.groupBy([ "flag_icd10_hes_op"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+spark.sql(f'drop table {dbc_write}.ccu075_01_icd10_op_mm_20240725')
+
+# COMMAND ----------
+
+df_out.write.mode('overwrite').saveAsTable(f'{dbc_write}.ccu075_01_icd10_op_mm_20240725_updated')
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC

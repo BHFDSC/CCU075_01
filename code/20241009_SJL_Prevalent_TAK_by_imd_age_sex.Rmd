@@ -1,0 +1,220 @@
+---
+title: "Prevalence estimates for Takayasu arteritis in England by Demographic Group"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+
+# Get data
+prevalence_cohort_England <- read.csv2("ccu075_01_M314_p_cohort_20241007.csv")
+denominators_2022 <- read.csv("ccu075_01_denominators_age_group_sex_IMD_20241009.csv")
+```
+
+### Prevalent cohort: crude rate ratio by IMD
+
+```{r ratios}
+# Set parameters for analyses
+CI_level <- 0.95
+rate_multiplier <- 1000000
+
+#Compile cases and denominator dataset where age is grouped
+grouped_demographics <- prevalence_cohort_England %>%
+  select(-age_group) %>%
+  group_by(QUINTILE, sex, age_group_index) %>%
+  summarise(cases = n()) %>%
+  ungroup() %>%
+  rename(IMD = QUINTILE,
+         age_group = age_group_index)
+
+denominators_2022_grouped <- denominators_2022 %>%
+  group_by(IMD, sex, age_group) %>%
+  summarise(population = sum(as.numeric(Population))) %>%
+  mutate(IMD = as.numeric(IMD))
+
+#sum(denominators_2022_grouped$population) # approximately comparable for best estimates
+
+merged_grouped <- full_join(grouped_demographics, denominators_2022_grouped, by=c("IMD", "sex", "age_group")) %>%
+  mutate(cases = ifelse(is.na(cases), 0, cases))
+
+#sum(merged_grouped$population)
+#sum(merged_grouped$cases)
+```
+
+```{r crude_rates}
+crude_prev_rates_by_IMD <- merged_grouped %>%
+  group_by(IMD) %>%
+  summarise(Cases_to_publish = ifelse(sum(cases)>9, 5*round(sum(cases)/5,0), 0),
+            Cases_for_calculations = ifelse(sum(cases)>50, sum(cases), #calculates using real counts where n>50
+                                ifelse(sum(cases)>9, 5*round(sum(cases)/5,0), #calculates using counts to nearest 5 where n>9/<50
+                                       0)), #Suppresses percentage where count is less than 10
+            Percentage_to_publish = ifelse(sum(cases)>50, round(100*(sum(cases)/length(prevalence_cohort_England[,1])),1), #calculates percentage using real counts where n>50
+                                ifelse(sum(cases)>9, round(100*(5*round(sum(cases)/5,0)/length(prevalence_cohort_England[,1])),1), #calculates percentage using counts to nearest 5 where n>9/<50
+                                       paste0("<", round(100*(10/length(prevalence_cohort_England[,1]))),1))), #Suppresses percentage where count is less than 10
+            Population=sum(population),
+            Crude_prevalence = Cases_for_calculations/sum(population)*rate_multiplier,
+            Lower_limit = poisson.test(Cases_for_calculations,conf.level = CI_level)$conf.int[1]/sum(population)*rate_multiplier,
+            Upper_limit = poisson.test(Cases_for_calculations,conf.level = CI_level)$conf.int[2]/sum(population)*rate_multiplier)
+
+#Combine and export
+crude_prev_rates <- crude_prev_rates_by_IMD %>%
+  select(IMD, Cases_to_publish, Percentage_to_publish, Population, Crude_prevalence, Lower_limit, Upper_limit)
+
+#Print table
+crude_prev_rates %>%
+  kable(booktabs=TRUE, align="l", col.names = c("IMD", 
+                       "Number of prevalent cases", 
+                       "Percentage of total", 
+                       "Population",
+                       "Crude prevalence*", 
+                       "95% CI lower bound",
+                       "95% CI upper bound"))
+
+#write.csv(crude_prev_rates, "ccu075_01_M314_prev_rates_per_m_imd_20241009.csv")
+
+# Contextual information
+# Crude prevalence of Takayasu arteritis by index of multiple deprivation: 1st July 2022
+# 
+# Column 1: Index of multiple deprivation
+# Column 2: Number of cases of Takayasu arteritis (M31.4) rounded to the nearest 5, with no values less than 10
+# Column 3: Percentage of total cases calculated using raw counts when >50, counts rounded to nearest 5 when >9 AND <50, and suppressed when <9
+# Column 4: Population count based on publicly available data (Office of National Statistics)
+# Column 5*: Crude prevalence rate derived from the unrounded counts used to produce column 3/Population in column 4*1,000,000.
+# Column 6*: Poisson 95% confidence interval lower bound
+# Column 7*: Poisson 95% confidence interval upper bound
+```
+
+### Crude odds ratios: IMD
+
+```{r prevalence_odds_IMD, message=FALSE}
+crude_prev_rates_by_IMD2 <- merged_grouped %>%
+  group_by(IMD) %>%
+  summarise(Cases_for_calculations = ifelse(sum(cases)>50, sum(cases), #calculates using real counts where n>50
+                                            ifelse(sum(cases)>9, 5*round(sum(cases)/5,0), #calculates using counts to nearest 5 where n>9/<50
+                                                   1)), #Suppresses percentage where count is less than 10 (to 1 to enable code to parse)
+            Population=sum(population)) %>%
+  mutate(IMD = as.factor(IMD))
+
+poisson.model_IMD <- glm(formula = Cases_for_calculations ~ IMD, 
+                         offset = log(Population),
+                         family = poisson(link="log"), 
+                         data = crude_prev_rates_by_IMD2)
+
+summary(poisson.model_IMD)
+
+ecm <- exp(coef(poisson.model_IMD))
+ci <- exp(confint(poisson.model_IMD))
+
+#Make sure groups below work:
+collated_crude_ORs <- data.frame(rbind(c(Group = "IMD1", 
+                                         OR = 1, 
+                                         Lower_CI = NA, 
+                                         Upper_CI = NA),
+                                       c(Group = "IMD2", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="IMD2")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="IMD2"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="IMD2"),][[2]],2)),
+                                       c(Group = "IMD3", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="IMD3")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="IMD3"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="IMD3"),][[2]],2)),
+                                       c(Group = "IMD4", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="IMD4")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="IMD4"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="IMD4"),][[2]],2)),
+                                       c(Group = "IMD5", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="IMD5")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="IMD5"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="IMD5"),][[2]],2))
+                                 )
+                           )
+```
+
+### Adjusted odds ratios: IMD
+
+```{r prevalence_odds_adj, message=FALSE}
+adjusted_prev_rates_by_IMD <- merged_grouped %>%
+  mutate(Cases_for_calculations = ifelse(cases == 0, 1, cases)) #Doesn't suppress counts but resolves 0 to 1 to enable code to parse
+
+adjusted_prev_rates_by_IMD <- adjusted_prev_rates_by_IMD %>%
+  mutate(IMD = as.factor(IMD))
+
+poisson.model_IMD2 <- glm(formula = Cases_for_calculations ~ IMD + age_group + sex, 
+                         offset = log(population),
+                         family = poisson(link="log"), 
+                         data = adjusted_prev_rates_by_IMD)
+
+summary(poisson.model_IMD2)
+
+ecm <- exp(coef(poisson.model_IMD2))
+ci <- exp(confint(poisson.model_IMD2))
+
+collated_ORs <- data.frame(rbind(collated_crude_ORs,
+                                       c(Group = "IMD1*", 
+                                         OR = 1, 
+                                         Lower_CI = NA, 
+                                         Upper_CI = NA),
+                                       c(Group = "IMD2*", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="IMD2")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="IMD2"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="IMD2"),][[2]],2)),
+                                       c(Group = "IMD3*", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="IMD3")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="IMD3"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="IMD3"),][[2]],2)),
+                                       c(Group = "IMD4*", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="IMD4")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="IMD4"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="IMD4"),][[2]],2)),
+                                       c(Group = "IMD5*", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="IMD5")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="IMD5"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="IMD5"),][[2]],2))
+                                 )
+                           )
+```
+
+```{R export}
+#Print table
+collated_ORs %>%
+  kable(booktabs=TRUE, align="l", col.names = c("Group", 
+                       "Odds ratio", 
+                       "95% CI lower bound",
+                       "95% CI upper bound"))
+
+#write.csv(collated_ORs, "ccu075_01_M314_prev_ratios_IMD_20241009.csv")
+
+# Contextual information
+# Crude and adjusted odds ratios for prevalence of Takayasu arteritis by demographic group: 1st July 2022
+# 
+# Column 1: Index of multiple deprivation. Asterisk indicates ratios adjusted for age and sex, otherwise the estimates given are crude
+# Column 2: Odds ratio of diagnosis with Takayasu arteritis within each demographic group (1 indicates reference group)
+# Column 3: Poisson 95% confidence interval lower bound
+# Column 4: Poisson 95% confidence interval upper bound
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

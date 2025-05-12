@@ -1,0 +1,169 @@
+---
+title: "Prevalence of TAK by age, sex, and region"
+author: "Stephanie J Lax"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide
+  
+---
+
+```{r setup, include=FALSE}
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages at first use
+# install.packages("sf")
+# install.packages("raster")
+# install.packages("ggplot2")
+# install.packages("rgeos")
+# install.packages("maptools")
+# install.packages("scales")
+
+library(sf)
+library(raster)
+library(ggplot2)
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+#set working directory
+setwd("[redacted]")
+```
+
+### Data
+
+```{r regional_TAK_prevalence}
+prevalence_data <- read.csv2("[redacted]~/ccu075_01_M314_prev_rates_per_m_20241003.csv") %>%
+  select(-X) %>%
+  filter(Group %in% c("Overall", "Female", "Male", "E12000001", "E12000002", "E12000003", 
+                      "E12000004", "E12000005", "E12000006", 
+                      "E12000007", "E12000008", "E12000009"))
+
+overall_prevalence <- prevalence_data %>%
+  filter(Group == "Overall") %>%
+  select(-c(Group, Percentage_to_publish)) %>%
+  kable(booktabs = TRUE, align = "l", col.names = c("Cases of M31.4",
+                                                    "Population",
+                                                    "Crude prevalence rate*",
+                                                    "Poisson 95% CI (lower bound)",
+                                                    "Poisson 95% CI (upper bound)")
+        )
+
+prevalence_by_age <- read.csv2("[redacted]~/ccu075_01_M314_prev_rates_per_m_20241007.csv") %>%
+  select(-X) 
+
+prevalence_by_age %>%
+  kable(booktabs = TRUE, align = "l", col.names = c("Age group",
+                                                    "Cases of M31.4",
+                                                    "Percentage of total cases",
+                                                    "Population", 
+                                                    "Crude prevalence rate*",
+                                                    "Poisson 95% CI (lower bound)",
+                                                    "Poisson 95% CI (upper bound)")
+        )
+
+
+prevalence_by_sex <- prevalence_data %>%
+  filter(Group %in% c("Female", "Male")) %>%
+  kable(booktabs = TRUE, align = "l", col.names = c("Sex",
+                                                    "Cases of M31.4",
+                                                    "Percentage of total cases",
+                                                    "Population", 
+                                                    "Crude prevalence rate*",
+                                                    "Poisson 95% CI (lower bound)",
+                                                    "Poisson 95% CI (upper bound)")
+        )
+
+region_names <- data.frame(rbind(c("E12000001", "North East"),
+                                 c("E12000002", "North West"),
+                                 c("E12000003", "Yorkshire and The Humber"), 
+                                 c("E12000004", "East Midlands"),
+                                 c("E12000005", "West Midlands"), 
+                                 c("E12000006", "East of England"), 
+                                 c("E12000007", "London"), 
+                                 c("E12000008", "South East"), 
+                                 c("E12000009", "South West")))
+                  
+                  
+
+prevalence_by_region <- left_join(prevalence_data, region_names, by=c("Group"= "X1")) %>%
+  filter(Group %in% c("E12000001", "E12000002", "E12000003", 
+                      "E12000004", "E12000005", "E12000006", 
+                      "E12000007", "E12000008", "E12000009")) %>%
+  select(X2, Group, Cases_to_publish, Percentage_to_publish, 
+         Population, Crude_prevalence, Lower_limit, Upper_limit)
+
+prevalence_by_region  %>%
+  kable(booktabs = TRUE, align = "l", col.names = c("Region name", 
+                                                    "Region code", 
+                                                    "Cases of M31.4",
+                                                    "Percentage of total cases",
+                                                    "Population", 
+                                                    "Crude prevalence rate*",
+                                                    "Poisson 95% CI (lower bound)",
+                                                    "Poisson 95% CI (upper bound)")
+        )
+
+prevalence_data_to_plot <- prevalence_by_region %>%
+  select(Group, Crude_prevalence) %>%
+  mutate(Crude_prevalence_1dp = round(Crude_prevalence,1))
+
+prevalence_ratios <- read.csv2("[redacted]~/ccu075_01_M314_prev_ratios_age_sex_region_20241007.csv") %>%
+  select(-X)
+
+prevalence_data_combined <- rbind(prevalence_data, prevalence_by_age)
+
+prevalence_data_with_crude_ratios <- left_join(prevalence_data_combined, prevalence_ratios, by="Group") 
+
+adjusted_ratios <- prevalence_ratios %>%
+  filter(grepl("\\*", Group)) %>%
+  mutate(Group = gsub("\\*", "", Group)) %>%
+  rename(aOR = OR,
+         aLower_CI = Lower_CI,
+         aUpper_CI = Upper_CI)
+
+prevalence_data_with_adjusted_ratios <- left_join(prevalence_data_with_crude_ratios, adjusted_ratios, by="Group") 
+
+prevalence_final <- left_join(prevalence_data_with_adjusted_ratios, region_names, by=c("Group"= "X1"))
+
+# write.csv(prevalence_final, "20241007_Prevalence_by_age_sex_region.csv")
+```
+
+*NB: Counts rounded to nearest 5 to comply with NHSE disclosure controls. Total cases rounded based on the sum of the unrounded counts.*
+
+### Choropleth map
+
+```{r map_explore_ONS_England, message=FALSE, fig.height = 7, fig.width = 7}
+gor <- st_read("./Choropleth map/RGN_DEC_2022_EN_BFC_V2.shp")
+#map data (Shapefile) downloaded from https://geoportal.statistics.gov.uk/datasets/8d3a9e6e7bd445e2bdcc26cdf007eac7_4/about
+# https://geoportal.statistics.gov.uk/datasets/c1ba53654f89474595136458c7491912/explore?filters=eyJMU09BMDFDRCI6WyJFMDEwMTgyMzAiXX0%3D is a lookup table to check lsoa01 entries that can't be mapped.
+
+to_plot <- right_join(gor, prevalence_data_to_plot, by=c("RGN22CD" = "Group"))
+
+cnames <-aggregate(cbind(st_coordinates(st_centroid(to_plot$geometry))) ~ RGN22NM, data = to_plot, FUN = function(x)mean(range(x)))
+cnames$angle <-0
+cnames$Y[3] <- 190000 #London
+cnames$X[4] <- 398000 #North East
+cnames$Y[4] <- 580000
+cnames$X[5] <- 340000 #North West
+cnames$Y[5] <- 510000
+cnames$Y[6] <- 140000 #South East
+cnames$Y[7] <- 110000 #South West
+cnames$Y[9] <- 470000 #Yorkshire
+
+ggplot() + 
+  geom_sf(data = to_plot, size = 1.5, color = "black", aes(fill = Crude_prevalence_1dp)) + #add `, fill = "cyan1"` for block colour
+  geom_text(data = cnames, aes(X, Y, label = RGN22NM, angle=angle, map_id=NULL), size=2) +
+  scale_fill_gradient2(low="cornflowerblue", mid="white", high="deeppink3", midpoint=22) +
+  ggtitle("Takayasu arteritis in England: mid-2022 point prevalence by region") + 
+  coord_sf() + 
+  theme_bw() + 
+  labs(fill = "Cases/million", x = "", y="")
+```
+
+### Version
+
+```{r version}
+sessionInfo()
+```

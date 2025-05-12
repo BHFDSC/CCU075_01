@@ -1,0 +1,235 @@
+---
+title: "Prevalence estimates for Takayasu arteritis in England by region, age, and sex"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+
+# Get cohort data
+prevalence_cohort_England <- read.csv2("ccu075_01_M314_p_cohort_20241007.csv")
+
+# Get denominator data
+denominators_2022 <- read.csv2("ccu075_01_denominators_age_sex_region_20241003.csv")
+
+# Set parameters for analyses
+CI_level <- 0.95
+rate_multiplier <- 1000000
+
+#Compile cases and denominator dataset where age is grouped
+grouped_demographics <- prevalence_cohort_England %>%
+  select(-age_group) %>%
+  group_by(region_code, sex, age_group_index) %>%
+  summarise(cases = n()) %>%
+  ungroup() %>%
+  rename(Code = region_code,
+         age_group = age_group_index)
+
+denominators_2022_grouped <- denominators_2022 %>%
+  rename(sex = Sex) %>%
+  group_by(Code, sex, age_group) %>%
+  summarise(population = sum(as.numeric(Population)))
+  
+merged_grouped <- full_join(grouped_demographics, denominators_2022_grouped, by=c("Code", "sex", "age_group")) %>%
+  mutate(cases = ifelse(is.na(cases), 0, cases))
+```
+
+### Prevalence rate ratios by sex and age group
+
+```{r ratios}
+adjusted_prev_rates_by_region <- merged_grouped %>%
+  mutate(Cases_for_calculations = ifelse(cases == 0, 1, cases)) #Doesn't suppress counts but resolves 0 to 1 to enable code to parse
+
+adjusted_prev_rates_by_region$sex <- factor(adjusted_prev_rates_by_region$sex, levels=c("Male", "Female"))
+
+adjusted_prev_rates_by_region$age_group <- factor(adjusted_prev_rates_by_region$age_group, levels=c("16-39", 
+                                                                                                    "0-15", 
+                                                                                                    "40-54", 
+                                                                                                    "55-69", 
+                                                                                                    "70-84", 
+                                                                                                    "85-90"))
+
+adjusted_prev_rates_by_region$Code <- factor(adjusted_prev_rates_by_region$Code, levels=c("E12000007", 
+                                                                                          "E12000001", 
+                                                                                          "E12000002", 
+                                                                                          "E12000003", 
+                                                                                          "E12000004", 
+                                                                                          "E12000005",
+                                                                                          "E12000006",
+                                                                                          "E12000008",
+                                                                                          "E12000009"))
+
+poisson.model_region <- glm(formula = Cases_for_calculations ~ age_group + sex, 
+                         offset = log(population),
+                         family = poisson(link="log"), 
+                         data = adjusted_prev_rates_by_region)
+
+summary(poisson.model_region)
+
+ecm <- exp(coef(poisson.model_region))
+ci <- exp(confint(poisson.model_region))
+
+collated_ORs <- data.frame(rbind(c(Group = "Male", OR = 1, Lower_CI = NA, Upper_CI = NA),
+                                       c(Group = "Female (adjusted by age group)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="Female")][[1]],2),
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="Female"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="Female"),][[2]],2)), 
+                                 c(Group = "0-15 (adjusted by sex)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="0-15")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="0-15"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="0-15"),][[2]],2)),
+                                       c(Group = "16-39", 
+                                         OR = 1, 
+                                         Lower_CI = NA, 
+                                         Upper_CI = NA),
+                                       c(Group = "40-54 (adjusted by sex)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="40-54")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="40-54"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="40-54"),][[2]],2)),
+                                       c(Group = "55-69 (adjusted by sex)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="55-69")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="55-69"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="55-69"),][[2]],2)),
+                                       c(Group = "70-84 (adjusted by sex)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="70-84")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="70-84"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="70-84"),][[2]],2)),
+                                       c(Group = "85-90 (adjusted by sex)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="85-90")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="85-90"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="85-90"),][[2]],2))
+)
+)
+```
+
+### Adjusted prevalence rate ratios: region, age and sex
+
+```{r prevalence_odds_adj, message=FALSE}
+poisson.model_region2 <- glm(formula = Cases_for_calculations ~ Code + age_group + sex, 
+                         offset = log(population),
+                         family = poisson(link="log"), 
+                         data = adjusted_prev_rates_by_region)
+
+summary(poisson.model_region2)
+
+# poisson.model_region2$deviance/poisson.model_region2$df.residual < 2
+# plot(poisson.model_region2) - these look OK
+
+ecm <- exp(coef(poisson.model_region2))
+ci <- exp(confint(poisson.model_region2))
+
+collated_ORs <- data.frame(rbind(collated_ORs,
+                                       c(Group = "Male", OR = 1, Lower_CI = NA, Upper_CI = NA),
+                                       c(Group = "Female (adjusted by age group and region)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="Female")][[1]],2),
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="Female"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="Female"),][[2]],2)), 
+                                 c(Group = "0-15 (adjusted by sex and region)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="0-15")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="0-15"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="0-15"),][[2]],2)),
+                                       c(Group = "16-39", 
+                                         OR = 1, 
+                                         Lower_CI = NA, 
+                                         Upper_CI = NA),
+                                       c(Group = "40-54 (adjusted by sex and region)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="40-54")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="40-54"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="40-54"),][[2]],2)),
+                                       c(Group = "55-69 (adjusted by sex and region)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="55-69")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="55-69"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="55-69"),][[2]],2)),
+                                       c(Group = "70-84 (adjusted by sex and region)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="70-84")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="70-84"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="70-84"),][[2]],2)),
+                                       c(Group = "85-90 (adjusted by sex and region)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="85-90")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="85-90"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="85-90"),][[2]],2)),
+                                 c(Group = "E12000001 (adjusted by sex and age group)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="E12000001")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="E12000001"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="E12000001"),][[2]],2)),
+                                       c(Group = "E12000002 (adjusted by sex and age group)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="E12000002")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="E12000002"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="E12000002"),][[2]],2)),
+                                       c(Group = "E12000003 (adjusted by sex and age group)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="E12000003")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="E12000003"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="E12000003"),][[2]],2)),
+                                       c(Group = "E12000004 (adjusted by sex and age group)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="E12000004")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="E12000004"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="E12000004"),][[2]],2)),
+                                       c(Group = "E12000005 (adjusted by sex and age group)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="E12000005")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="E12000005"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="E12000005"),][[2]],2)),
+                                       c(Group = "E12000006 (adjusted by sex and age group)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="E12000006")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="E12000006"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="E12000006"),][[2]],2)),
+                                       c(Group = "E12000007 (adjusted by sex and age group)", 
+                                         OR = 1, 
+                                         Lower_CI = NA, 
+                                         Upper_CI = NA),
+                                       c(Group = "E12000008 (adjusted by sex and age group)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="E12000008")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="E12000008"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="E12000008"),][[2]],2)),
+                                       c(Group = "E12000009 (adjusted by sex and age group)", 
+                                         OR = round(ecm[str_detect(names(ecm), pattern="E12000009")][[1]],2), 
+                                         Lower_CI = round(ci[str_detect(row.names(ci), pattern="E12000009"),][[1]],2), 
+                                         Upper_CI = round(ci[str_detect(row.names(ci), pattern="E12000009"),][[2]],2))
+                                 )
+                           )
+```
+
+```{R export}
+#Print table
+collated_ORs %>%
+  kable(booktabs=TRUE, align="l", col.names = c("Group", 
+                       "Odds ratio", 
+                       "95% CI lower bound",
+                       "95% CI upper bound")
+        )
+
+#write.csv2(collated_ORs, "ccu075_01_M314_prev_ratios_age_sex_region_20250203.csv")
+
+# Contextual information
+# Adjusted prevalence ratios for Takayasu arteritis by demographic group: 1st July 2022
+# 
+# Column 1: Demographic group relating to the specific incidence rate ratio, with details of the model adjustments in parentheses.
+# Column 2: Prevalence rate ratio  for Takayasu arteritis within each demographic group (1 indicates reference group)
+# Column 3: Poisson 95% confidence interval lower bound
+# Column 4: Poisson 95% confidence interval upper bound
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

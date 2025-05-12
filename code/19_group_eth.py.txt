@@ -1,0 +1,101 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC
+# MAGIC # Code to group ethnicity data into ONS broad categories
+# MAGIC
+# MAGIC Description: This notebook adds ONS broad ethnicity categories for the TAK cohort.
+# MAGIC
+# MAGIC Authors and Reviewers: Mehrdad Mizani, Stephanie Lax
+
+# COMMAND ----------
+
+# MAGIC %run /Workspace/Shared/SHDS/common/functions
+
+# COMMAND ----------
+
+# MAGIC %run ./02_load_datasets
+
+# COMMAND ----------
+
+df_final= spark.table(f'{dbc_write}.ccu075_01_df_final_20240822_updated')
+
+# COMMAND ----------
+
+display(df_final.groupBy("ETHNOS").agg(f.count("*")))
+
+# COMMAND ----------
+
+df_final.filter(f.col("ETHNOS").isNull()).count()
+
+# COMMAND ----------
+
+eth_dict = {
+    "A" : "White",
+    "B" : "White",
+    "C" : "White",
+    "D" : "Mixed",
+    "E" : "Mixed",
+    "F" : "Mixed",
+    "G" : "Mixed",
+    "H" : "Asian",
+    "J" : "Asian",
+    "K" : "Asian",
+    "L" : "Asian",
+    "M" : "Black",
+    "N"  : "Black",
+    "P"  : "Black",
+    "R"  : "Asian",
+    "S"  : "Other",
+    "Z"  : "Unknown",
+    "X"  : "Unknown",
+    "99"  : "Unknown",
+    "0"  : "White",
+    "1"  : "Black",
+    "2" :  "Black",
+    "3" : "Black",
+    "4" : "Asian",
+    "5" : "Asian",
+    "6" : "Asian",
+    "7" : "Asian",
+    "8" : "Other",
+    "9" : "Unknown",
+    "99" : "Unknown"
+}
+
+# COMMAND ----------
+
+mapping_list = [(k, v) for k, v in eth_dict.items()]
+mapping_df = spark.createDataFrame(mapping_list, ["ETHNOS", "Eth_grouped"])
+display(mapping_df)
+
+# COMMAND ----------
+
+df_eth = df_final.select(["PERSON_ID_DEID", "ETHNOS", "ethnicity_source"])
+
+# COMMAND ----------
+
+display(df_eth)
+
+# COMMAND ----------
+
+df_eth = df_eth.join(f.broadcast(mapping_df), on= ["ETHNOS"], how="left")
+
+# COMMAND ----------
+
+display(df_eth)
+
+# COMMAND ----------
+
+display(df_eth.groupBy("Eth_grouped").agg(f.count("*")))
+
+# COMMAND ----------
+
+df_eth.filter(f.col("Eth_grouped").isNull()).count()
+
+# COMMAND ----------
+
+df_eth.columns
+
+# COMMAND ----------
+
+df_eth.select(['PERSON_ID_DEID', 'ETHNOS', 'ethnicity_source', 'Eth_grouped']).write.mode('overwrite').saveAsTable(f'{dbc_write}.ccu075_01_df_eth_grouped_final_20240918_updated')

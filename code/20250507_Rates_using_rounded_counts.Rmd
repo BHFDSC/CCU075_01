@@ -1,0 +1,116 @@
+---
+title: "Incidence and prevalence estimates for Takayasu arteritis in England"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(sf)
+library(raster)
+library(ggplot2)
+
+#load data
+rounded_data <- read.csv2("[redacted]~/20250507_Rounded_Counts.csv") 
+```
+
+### Repeat calculations using rounded counts
+
+```{r annual_incidence}
+# Set parameters for analyses
+CI_level <- 0.95
+rate_multiplier <- 1000000
+
+# Rate per million with 2-tailed 95% Poisson confidence intervals
+new_rates <- rounded_data %>%
+  mutate(Population2 = as.numeric(gsub(",", "", Population)),
+         Rate = round(Cases/Population2*rate_multiplier,1)) %>%
+  rowwise %>%
+  mutate(Lower_limit = round(poisson.test(Cases,conf.level = CI_level)$conf.int[1]/Population2*rate_multiplier,1),
+         Upper_limit = round(poisson.test(Cases,conf.level = CI_level)$conf.int[2]/Population2*rate_multiplier,1),
+         Concatenated = paste0(Rate, " (", Lower_limit, ", ", Upper_limit, ")")) 
+
+# write.csv(new_rates, "20250507_Rates_from_Rounded_Counts.csv")
+```
+
+Footnote: * Incident cases per million with 2-tailed 95% Poisson confidence interval.
+NB: Cases rounded to nearest 5 to comply with disclosure control protocol.
+
+#### Annual incidence figure
+
+```{r plot_by_year}
+# Remove totals row
+annual_incidence <- new_rates %>% 
+  filter(Table == 2,
+         Year != "Total")
+
+# Plot number of incident cases per year with 95% Poisson CI and indicating COVID-19 pandemic
+ggplot(data=annual_incidence, aes(x=Year)) +
+  geom_col(aes(y=Cases), fill="cornflowerblue", alpha=0.5) +
+  geom_line(aes(y=round(Rate,1)*50, group=1), color="blue") +
+  geom_errorbar(aes(ymin=Lower_limit*50, ymax=Upper_limit*50), width=0.2) +
+  labs(title="Takayasu arteritis incidence per million with 95% Poisson CI", x="Year") +
+  theme_bw() +
+  scale_y_continuous(
+    name = "Observed cases",
+    sec.axis = sec_axis(transform=~./50, name="Rate per million")
+  ) +
+  theme(plot.title=element_text(size=10), axis.title=element_text(size=10),
+        axis.text.x=element_text(size=10, angle=90, hjust=0, vjust=0.5), axis.text.y=element_text(size=10)) +
+  geom_point(aes(x=Year, y=Rate*50), size=1.5) +
+  geom_vline(xintercept=14.5, linetype="dashed", colour="red", linewidth=1) +
+  geom_label(label="COVID-19\npandemic", x=15.55, y=100,
+             label.padding=unit(0.2, "lines"), label.size=0.09, colour="black", fill="lightgoldenrodyellow")
+```
+
+#### Choropleth map
+
+```{r choropleth}
+prevalence_data_to_plot <- new_rates %>%
+  filter(Table == 4,
+         Group == "Region") %>%
+  mutate(Region = Year)
+
+gor <- st_read("./Choropleth map/RGN_DEC_2022_EN_BFC_V2.shp")
+#map data (Shapefile) downloaded from https://geoportal.statistics.gov.uk/datasets/8d3a9e6e7bd445e2bdcc26cdf007eac7_4/about
+# https://geoportal.statistics.gov.uk/datasets/c1ba53654f89474595136458c7491912/explore?filters=eyJMU09BMDFDRCI6WyJFMDEwMTgyMzAiXX0%3D is a lookup table to check lsoa01 entries that can't be mapped.
+
+to_plot <- right_join(gor, prevalence_data_to_plot, by=c("RGN22NM" = "Region"))
+
+cnames <-aggregate(cbind(st_coordinates(st_centroid(to_plot$geometry))) ~ RGN22NM, data = to_plot, FUN = function(x)mean(range(x)))
+cnames$angle <-0
+cnames$Y[3] <- 190000 #London
+cnames$X[4] <- 398000 #North East
+cnames$Y[4] <- 580000
+cnames$X[5] <- 340000 #North West
+cnames$Y[5] <- 510000
+cnames$Y[6] <- 140000 #South East
+cnames$Y[7] <- 110000 #South West
+cnames$Y[9] <- 470000 #Yorkshire
+
+ggplot() + 
+  geom_sf(data = to_plot, size = 1.5, color = "black", aes(fill = Rate)) + #add `, fill = "cyan1"` for block colour
+  geom_text(data = cnames, aes(X, Y, label = RGN22NM, angle=angle, map_id=NULL), size=2) +
+  scale_fill_gradient2(low="cornflowerblue", mid="white", high="deeppink3", midpoint=22) +
+  ggtitle("Takayasu arteritis in England: mid-2022 point prevalence by region") + 
+  coord_sf() + 
+  theme_bw() + 
+  labs(fill = "Cases/million", x = "", y="")
+```
+
+### Version
+
+```{r version, echo=FALSE}
+#4.4.2
+sessionInfo()
+```

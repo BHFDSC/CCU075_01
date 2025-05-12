@@ -1,0 +1,94 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # CCU075_01: Archive date assessment 
+# MAGIC Description: The notebook lists the archive dates of datasets.  
+# MAGIC
+# MAGIC Authors and Reviewers: Mehrdad Mizani, Stephanie Lax
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Loading the libraries and datasets
+# MAGIC
+# MAGIC HES APC, HES OP, HES OTR (to check the validity of NHS NUMBER), HES A&E
+
+# COMMAND ----------
+
+import pandas as pd
+import numpy as np
+import pyspark.sql.functions as f
+import pyspark.sql.types as t
+import datetime
+from pyspark.sql.window import Window
+
+# COMMAND ----------
+
+# raw database
+db = "dars_nic_391419_j3w9t"
+# dss_corporate
+db_corporate = "dss_corporate"
+df_byod = "bhf_cvd_covid_uk_byod"
+# read only database containing archive tables
+dbc = "dars_nic_391419_j3w9t_collab"
+# Read write database
+dbc_write = "dsa_391419_j3w9t_collab"
+
+# COMMAND ----------
+
+# list all the archive_on dates of HES APC
+hes_apc_arch = spark.table(f'''{dbc}.hes_apc_all_years_archive''')
+vector_dates = list(hes_apc_arch.\
+    select(f.col("archived_on")).distinct().collect())
+list_dates = [vec["archived_on"] for vec in vector_dates]
+list_pd = np.flip(np.sort(list_dates))
+list_pd
+
+# COMMAND ----------
+
+# list all the archive_on dates of HES APC OTR
+hes_apc_otr_arch = spark.table(f'''{dbc}.hes_apc_otr_all_years_archive''')
+vector_dates = list(hes_apc_otr_arch.\
+    select(f.col("archived_on")).distinct().collect())
+list_dates = [vec["archived_on"] for vec in vector_dates]
+list_pd = np.flip(np.sort(list_dates))
+list_pd
+
+# COMMAND ----------
+
+# list all the archive_on dates of HES OP
+hes_op_arch = spark.table(f'''{dbc}.hes_op_all_years_archive''')
+vector_dates = list(hes_op_arch.\
+    select(f.col("archived_on")).distinct().collect())
+list_dates = [vec["archived_on"] for vec in vector_dates]
+list_pd = np.flip(np.sort(list_dates))
+list_pd
+
+# COMMAND ----------
+
+# list all the archive_on dates of HES OP OTR
+hes_op_otr_arch = spark.table(f'''{dbc}.hes_op_otr_all_years_archive''')
+vector_dates = list(hes_op_otr_arch.\
+    select(f.col("archived_on")).distinct().collect())
+list_dates = [vec["archived_on"] for vec in vector_dates]
+list_pd = np.flip(np.sort(list_dates))
+list_pd
+
+# COMMAND ----------
+
+# list all the archive_on dates of HES A&E
+hes_ae_arch = spark.table(f'''{dbc}.hes_ae_all_years_archive''')
+vector_dates = list(hes_ae_arch.\
+    select(f.col("archived_on")).distinct().collect())
+list_dates = [vec["archived_on"] for vec in vector_dates]
+list_pd = np.flip(np.sort(list_dates))
+list_pd
+
+# COMMAND ----------
+
+# list all the archive_on dates of deaths
+deaths_arch = spark.table(f'''{dbc}.deaths_dars_nic_391419_j3w9t_archive''')
+vector_dates = list(deaths_arch.\
+    select(f.col("archived_on")).distinct().collect())
+list_dates = [vec["archived_on"] for vec in vector_dates]
+list_pd = np.flip(np.sort(list_dates))
+list_pd

@@ -1,0 +1,77 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # CCU075_01: Load datasets
+# MAGIC Description: The notebook loads the datasets archived on a specific date.
+# MAGIC
+# MAGIC Authors and Reviewers: Mehrdad Mizani, Stephanie Lax
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load the datasets (archived_on 2024-04-25)
+# MAGIC
+
+# COMMAND ----------
+
+import pandas as pd
+import numpy as np
+import pyspark.sql.functions as f
+import pyspark.sql.types as t
+import datetime
+from pyspark.sql.window import Window
+
+# COMMAND ----------
+
+# raw database
+db = "dars_nic_391419_j3w9t"
+# dss_corporate
+db_corporate = "dss_corporate"
+df_byod = "bhf_cvd_covid_uk_byod"
+# read only database containing archive tables
+dbc = "dars_nic_391419_j3w9t_collab"
+# Read write database
+dbc_write = "dsa_391419_j3w9t_collab"
+
+# COMMAND ----------
+
+# HES APC
+hes_apc_arch = spark.table(f'''{dbc}.hes_apc_all_years_archive''')
+df_hes_apc = hes_apc_arch.filter(f.col("archived_on")==datetime.date(2024, 4, 25))
+
+# COMMAND ----------
+
+# HES APC OTR
+hes_apc_otr_arch = spark.table(f'''{dbc}.hes_apc_otr_all_years_archive''')
+df_hes_apc_otr = hes_apc_otr_arch.filter(f.col("archived_on")==datetime.date(2024, 4, 25))
+
+# COMMAND ----------
+
+# HES OP
+hes_op_arch = spark.table(f'''{dbc}.hes_op_all_years_archive''')
+df_hes_op = hes_op_arch.filter(f.col("archived_on")==datetime.date(2024, 4, 25))
+
+# COMMAND ----------
+
+# HES OP OTR
+hes_op_otr_arch = spark.table(f'''{dbc}.hes_op_otr_all_years_archive''')
+df_hes_op_otr = hes_op_otr_arch.filter(f.col("archived_on")==datetime.date(2024, 4, 25))
+
+# COMMAND ----------
+
+# HES A&E
+hes_ae_arch = spark.table(f'''{dbc}.hes_ae_all_years_archive''')
+df_hes_ae = hes_ae_arch.filter(f.col("archived_on")==datetime.date(2024, 4, 25))
+
+# COMMAND ----------
+
+# deaths
+deaths_arch = spark.table(f'''{dbc}.deaths_dars_nic_391419_j3w9t_archive''')
+df_deaths = deaths_arch.filter(f.col("archived_on")==datetime.date(2024, 4, 25))
+# Change the format of REG_DATE_OF_DEATH
+df_deaths = df_deaths.withColumn("REG_DATE_OF_DEATH", f.regexp_replace(f.col("REG_DATE_OF_DEATH"), "(\\d{4})(\\d{2})(\\d{2})", "$1-$2-$3"))
+
+# COMMAND ----------
+
+# GDPPR
+gdppr_arch = spark.table(f'''{dbc}.gdppr_dars_nic_391419_j3w9t_archive''')
+df_gdppr = gdppr_arch.filter(f.col("archived_on")==datetime.date(2024, 4, 25))

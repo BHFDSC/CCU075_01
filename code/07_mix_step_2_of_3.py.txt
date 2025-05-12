@@ -1,0 +1,271 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # CCU075_01 TAK cohort creation
+# MAGIC # Join TAK records from HES APC and HES OP + extracted ICD10 records + specialties in HES OP
+# MAGIC
+# MAGIC Description: Joing the TAK records from HES APC and OP, extracted ICD10 codes from HES APC and OP, and specialities from HES OP
+# MAGIC
+# MAGIC Authors and Reviewers: Mehrdad Mizani, Stephanie Lax
+# MAGIC
+# MAGIC General plan:  
+# MAGIC - TA in HES APC
+# MAGIC - TA in HES OP 
+# MAGIC - mix the first two 
+# MAGIC - ICD10 in HES APC
+# MAGIC - ICD10 in HES OP
+# MAGIC - Specialty in HES OP
+# MAGIC - Mix the previous dataframes (This notebook)
+# MAGIC - Sociodemographic
+# MAGIC
+# MAGIC
+# MAGIC 1.  Include all HES APC episodes with ICD-10 M31.4 in any diagnosis position.
+# MAGIC   -  Exclude any records which cannot be traced to a valid NHS number. 
+# MAGIC 2.  Include all HES OP episodes with ICD-10 M31.4 in any diagnosis position.
+# MAGIC   - Exclude any records which cannot be traced to a valid NHS number. 
+# MAGIC 3. Extract the occurence of the following ICD-10 codes in HES APC for TA patients (either in HES APC or HES OP)
+# MAGIC | Code | â€‚â€‚Type | â€‚â€‚Description| 
+# MAGIC |--|--|--|
+# MAGIC | I351â€‚|â€‚ICD-10 |â€‚Aortic (valve) insufficiency |
+# MAGIC | I652â€‚|â€‚ICD-10â€‚|â€‚â€‚â€‚â€‚Occlusion and stenosis of carotid artery |
+# MAGIC | I712â€‚| ICD-10â€‚â€‚â€‚| â€‚â€‚â€‚â€‚Thoracic aortic aneurysm, without mention of ruptureâ€‚| 
+# MAGIC | I771â€‚|â€‚ICD-10â€‚â€‚â€‚â€‚|â€‚â€‚Stricture of artery|
+# MAGIC | I776â€‚|â€‚ICD-10â€‚â€‚â€‚|â€‚â€‚â€‚Arteritis, unspecified|
+# MAGIC |M316â€‚|â€‚ICD-10â€‚â€‚â€‚|â€‚â€‚â€‚Other giant cell arteritis|
+# MAGIC |Z512â€‚|â€‚ICD-10â€‚â€‚â€‚|â€‚â€‚â€‚Other chemotherapy|
+# MAGIC |Z958â€‚|â€‚ICD-10â€‚â€‚â€‚â€‚|â€‚â€‚Presence of other cardiac and vascular implants and grafts|
+# MAGIC
+# MAGIC 4. Extract the occurence of the ICD-10 codes in HES OP for TA patients (either in HES APC or HES OP)
+# MAGIC 5. Extract the earliest attendance for rheumatology (410), renal medicine (361) or vascular surgery (107) under MAINSPEF/TRETSPEF in HES OP
+# MAGIC 6.  We will describe the cohort by
+# MAGIC   - age (EPISTART - MYDOB)
+# MAGIC   - sex (SEX)
+# MAGIC   - ethnicity (ETHNOS; the most frequent recorded ethnicity or the most recent used if two occurred equally).
+# MAGIC   - IMD mapped from either LSOA01, LSOA11, whichever is closest to the date of diagnosis. 
+# MAGIC 7. Date of death will be obtained through linkage to the Civil Registration Deaths dataset.
+# MAGIC 8. Final date and age adjustment (and exclusion based on <2 years old)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load functions
+# MAGIC
+# MAGIC Note: these functions will be updated in the nead future
+
+# COMMAND ----------
+
+# MAGIC %run /Workspace/Shared/SHDS/common/functions
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load the datasets and parameters from the previous netobook
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %run ./02_load_datasets
+
+# COMMAND ----------
+
+print(db)
+print(db_corporate)
+print(df_byod)
+print(dbc)
+print(dbc_write)
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load  TAK tables from HES APC and HES OP
+# MAGIC
+
+# COMMAND ----------
+
+# TAK HES APC + HES OP
+df_1 = spark.table(f'{dbc_write}.ccu075_01_tak_apc_op_mm_20240725')
+
+
+# COMMAND ----------
+
+count_var(df_1, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+display(df_1.groupBy(["flag_hes_apc_tak","flag_hes_op_tak"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+df_1.columns
+
+# COMMAND ----------
+
+display(df_1.limit(5))
+
+# COMMAND ----------
+
+# ICD10 in HES APC
+df_2 = spark.table(f'{dbc_write}.ccu075_01_icd10_apc_mm_20240725_updated')
+display(df_2.limit(5))
+
+# COMMAND ----------
+
+count_var(df_2, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+df_2.columns
+
+# COMMAND ----------
+
+display(df_2.groupBy([ "flag_icd10_hes_apc"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# ICD10 from HES OP
+df_3 = spark.table(f'{dbc_write}.ccu075_01_icd10_op_mm_20240725_updated')
+display(df_3.limit(5))
+
+# COMMAND ----------
+
+count_var(df_3, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+df_3.columns
+
+# COMMAND ----------
+
+display(df_3.groupBy([ "flag_icd10_hes_op"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# HES OP specialties
+df_4 = spark.table(f'{dbc_write}.ccu075_01_specialties_op_mm_20240725_updated')
+display(df_4.limit(5))
+
+# COMMAND ----------
+
+count_var(df_4, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+df_4.columns
+
+# COMMAND ----------
+
+display(df_4.groupBy([ "flag_spec_hes_op"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # join 
+
+# COMMAND ----------
+
+cols_1 = df_1.columns
+cols_2 = df_2.columns
+cols_3 = df_3.columns
+cold_4 = df_4.columns
+
+# COMMAND ----------
+
+# any overlaps between df_1 and df_2
+[item for item in cols_1 if item  in cols_2]
+
+# COMMAND ----------
+
+df_join_1_2 = df_1.join(df_2, on= ["PERSON_ID_DEID"], how="left")
+
+# COMMAND ----------
+
+# assess flags
+display(df_join_1_2.groupBy(["flag_hes_apc_tak", "flag_hes_op_tak", "flag_icd10_hes_apc"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+df_join_1_2_3 = df_join_1_2.join(df_3, on= ["PERSON_ID_DEID"], how="left" )
+
+# COMMAND ----------
+
+# assess flags
+display(df_join_1_2_3.groupBy(["flag_hes_apc_tak", "flag_hes_op_tak", "flag_icd10_hes_apc", "flag_icd10_hes_op"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+df_join_final = df_join_1_2_3.join(df_4, on= ["PERSON_ID_DEID"], how="left" )
+
+# COMMAND ----------
+
+# assess flags
+display(df_join_final.groupBy(["flag_hes_apc_tak", "flag_hes_op_tak", "flag_icd10_hes_apc", "flag_icd10_hes_op", "flag_spec_hes_op"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+count_var(df_join_final, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+df_join_final.columns
+
+# COMMAND ----------
+
+display(df_join_final)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+# MAGIC # Adjusted date
+# MAGIC
+
+# COMMAND ----------
+
+display(df_join_final.select(["dob_apc_curated", "dob_op", "dob_apc_op"]))
+
+# COMMAND ----------
+
+df_join_final.dtypes
+
+# COMMAND ----------
+
+# Minimum of APC_m314_event_date, OP_m314_event_date, APC_ICD10_CODE_date, OP_ICD10_CODE_date, OP_spec_date
+df_join_final = df_join_final.\
+    withColumn("adjusted_diag_date", f.least(f.col("APC_m314_event_date"),\
+        f.col("OP_m314_event_date"),\
+            f.col("APC_ICD10_CODE_date"),\
+                f.col("OP_ICD10_CODE_date"),\
+                    f.col("OP_spec_date")
+        ))
+
+# COMMAND ----------
+
+display(df_join_final.select(["adjusted_diag_date","APC_m314_event_date", "OP_m314_event_date", "APC_ICD10_CODE_date", "OP_ICD10_CODE_date", "OP_spec_date"]))
+
+# COMMAND ----------
+
+df_join_final.write.mode('overwrite').saveAsTable(f'{dbc_write}.ccu075_01_joined_table_2_of_3_20240725_updated')
+
+# COMMAND ----------
+
+df_test = spark.table(f'{dbc_write}.ccu075_01_joined_table_2_of_3_20240725_updated')
+
+# COMMAND ----------
+
+df_test.columns
+
+# COMMAND ----------
+
+[x for x in df_test.columns if x.startswith('flag')]
+
+# COMMAND ----------
+
+display(df_test.groupby("flag_spec_hes_op").agg(f.count("*")))
+
+# COMMAND ----------
+
+df_test_2 = spark.table(f'{dbc_write}.ccu075_01_df_step10_sex_mm_20240624')
+
+# COMMAND ----------
+
+df_test_2.columns

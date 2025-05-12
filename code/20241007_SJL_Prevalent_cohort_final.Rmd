@@ -1,0 +1,118 @@
+---
+title: "Prevalent cohort of people diagnosed Takayasu arteritis in England on 1st July 2022"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("odbc", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("DBI", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+
+#load data
+library(odbc)
+library(DBI)
+con <- DBI::dbConnect(odbc:::odbc(), "databricks")
+cohort = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_df_final_20240822_updated') # from 07_mix_step_2_of_3 (core table of cohort)
+lsoas_pre_index = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_lsoa_pre_index_date_final_updated') # from 18_LSOA01_impute_updated
+lsoa_2001_2011_long = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.hds_cur_lsoa_imd_lookup_long') # Lookup table for LSOA to IMDs
+lsoa_2011_regions = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.hds_cur_lsoa_region_lookup') # Lookup table for LSOA to region
+ethnicities = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_df_eth_grouped_final_20240918_updated') # Updated list of ethnicity data
+DBI::dbDisconnect(con)
+
+# simplify ethnicities for linkage
+ethnicities2 <- ethnicities %>%
+  select(PERSON_ID_DEID, Eth_grouped)
+
+# add ethnicities to cohort
+cohort_with_ethnicities <- left_join(cohort, ethnicities2, by=c("PERSON_ID_DEID"))
+# unique(cohort_with_ethnicities$Eth_grouped)
+
+# Remove individuals less than 2 years at adjusted diagnosis date
+cohort_over_2 <- cohort_with_ethnicities %>%
+  mutate(sex = ifelse(SEX == 1, "Male", "Female")) %>%
+  mutate(age_group = case_when(
+    final_age <= 15 ~ "0-15",
+    final_age > 15 & final_age <= 39 ~ "16-39",
+    final_age > 39 & final_age <= 54 ~ "40-54",
+    final_age > 54 & final_age <= 69 ~ "55-69",
+    final_age > 69 & final_age <= 84 ~ "70-84",
+    final_age > 84 ~ "85-90"
+    ),
+  age_group = factor(age_group, 
+                     level=c("0-15", "16-39", "40-54", "55-69", "70-84", "85-90")
+                     )
+  ) %>%
+  filter(as.numeric(final_age) >= 2) # number as expected less than full cohort
+# summary(cohort_over_2$final_age)
+# unique(cohort_over_2$age_group)
+
+lsoas_pre_index <- lsoas_pre_index %>%
+  select(PERSON_ID_DEID, LSOA11_curated_pre_index_date, info_LSOA11_pre_index_date)
+
+# merge with LSOA11 at index date and remove non English residents
+cohort_over_2_with_prev_lsoas <- left_join(cohort_over_2, lsoas_pre_index, by=c("PERSON_ID_DEID")) %>%
+  filter(grepl("E", LSOA11_curated_pre_index_date, fixed=TRUE)) 
+
+# unique(cohort_over_2_with_prev_lsoas$info_LSOA11_pre_index_date)
+
+# restrict to just most recent
+imd_mapping <- lsoa_2001_2011_long %>%
+  filter(IMD_YEAR == 2019) %>%
+  select(LSOA, QUINTILE)
+# unique(imd_mapping$QUINTILE)
+
+cohort_over_2_with_prev_imds <- left_join(cohort_over_2_with_prev_lsoas, imd_mapping, by=c("LSOA11_curated_pre_index_date" = "LSOA")) 
+# unique(cohort_over_2_with_prev_imds$QUINTILE) # no NA values
+
+region_mapping <- lsoa_2011_regions %>%
+  select(lsoa_code, region_code, region_name)
+
+cohort_over_2_with_prev_regions <- left_join(cohort_over_2_with_prev_imds, region_mapping, by=c("LSOA11_curated_pre_index_date" = "lsoa_code"))
+# unique(cohort_over_2_with_prev_regions$region_name)
+
+prevalence_cohort_England <- cohort_over_2_with_prev_regions %>%
+  filter(REG_DATE_OF_DEATH > "2022-07-01" | is.na(REG_DATE_OF_DEATH)) %>%
+  filter(final_diag_date <= "2022-07-01") %>%
+  mutate(age_at_index = floor(as.numeric((date("2022-07-01") - dob_apc_op)/365.25))) %>%
+  mutate(age_group_index = case_when(
+    age_at_index <= 15 ~ "0-15",
+    age_at_index > 15 & age_at_index <= 39 ~ "16-39",
+    age_at_index > 39 & age_at_index <= 54 ~ "40-54",
+    age_at_index > 54 & age_at_index <= 69 ~ "55-69",
+    age_at_index > 69 & age_at_index <= 84 ~ "70-84",
+    age_at_index > 84 ~ "85-90"
+    ),
+  age_group_index = factor(age_group_index, 
+                     level=c("0-15", "16-39", "40-54", "55-69", "70-84", "85-90")
+                     )
+  )
+# summary(prevalence_cohort_England$final_diag_date) - all before 1st JUly 2022
+# summary(as.Date(prevalence_cohort_England$REG_DATE_OF_DEATH)) - all after 1st July 2022 or NA
+# prevalence_cohort_England_check_ages <- prevalence_cohort_England %>%
+#   select(PERSON_ID_DEID, dob_apc_op, final_diag_date, final_age, age_group, age_at_index, age_group_index)
+# head(prevalence_cohort_England_check_ages)
+
+# Saving the cleaned table to the project area
+# setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+# write.csv2(prevalence_cohort_England, "ccu075_01_M314_p_cohort_20241007.csv")
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

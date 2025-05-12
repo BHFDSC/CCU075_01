@@ -1,0 +1,63 @@
+---
+title: "Prevalence estimates for Takayasu arteritis in England by Demographic Group"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("odbc", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("DBI", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+
+setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+
+# Get denominator data - the latest breakdown by age, sex, IMD is 2021, so we use that for 2022
+library(odbc)
+library(DBI)
+con <- DBI::dbConnect(odbc:::odbc(), "databricks")
+denominators = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_sex_imd_age_2006_2021')
+DBI::dbDisconnect(con)
+
+denominators_2022 <- denominators %>%
+  filter(Year == 2021) %>%
+  select(-Year) %>%
+  rename(IMD = IMD_Quintile) %>%
+  gather(key = "age", value="Population", -c("Sex", "IMD")) %>%
+  mutate(age_numeric = as.numeric(substring(age, 5, 7)),
+         sex = ifelse(Sex == "Males", "Male", "Female")) %>%
+  mutate(age_group = case_when(
+    age_numeric <= 15 ~ "0-15",
+    age_numeric > 15 & age_numeric <= 39 ~ "16-39",
+    age_numeric > 39 & age_numeric <= 54 ~ "40-54",
+    age_numeric > 54 & age_numeric <= 69 ~ "55-69",
+    age_numeric > 69 & age_numeric <= 84 ~ "70-84",
+    age_numeric > 84 ~ "85-90"
+  ),
+  age_group = factor(age_group, 
+                     level=c("0-15", "16-39", "40-54", "55-69", "70-84", "85-90")
+                     )
+  ) %>%
+  select(-c(age, Sex))
+
+# save for future
+#write.csv(denominators_2022, "ccu075_01_denominators_age_group_sex_IMD_20241009.csv")
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

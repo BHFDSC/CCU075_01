@@ -1,0 +1,191 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # CCU075_01 TAK cohort creation
+# MAGIC # Extract Specialties in HES OP
+# MAGIC
+# MAGIC Description: Extraction of outpatient appointments in relevant specialities in HES OP
+# MAGIC
+# MAGIC Authors and Reviewers: Mehrdad Mizani, Stephanie Lax
+# MAGIC
+# MAGIC General plan:  
+# MAGIC - TA in HES APC
+# MAGIC - TA in HES OP 
+# MAGIC - mix the first two 
+# MAGIC - ICD10 in HES APC 
+# MAGIC - ICD10 in HES OP 
+# MAGIC - Specialty in HES OP (This notebook)
+# MAGIC - Sociodemographic
+# MAGIC
+# MAGIC
+# MAGIC 1.  Include all HES APC episodes with ICD-10 M31.4 in any diagnosis position.
+# MAGIC   -  Exclude any records which cannot be traced to a valid NHS number. 
+# MAGIC 2.  Include all HES OP episodes with ICD-10 M31.4 in any diagnosis position.
+# MAGIC   - Exclude any records which cannot be traced to a valid NHS number. 
+# MAGIC 3. Extract the occurence of the following ICD-10 codes in HES APC for TA patients (either in HES APC or HES OP)
+# MAGIC | Code | â€‚â€‚Type | â€‚â€‚Description| 
+# MAGIC |--|--|--|
+# MAGIC | I351â€‚|â€‚ICD-10 |â€‚Aortic (valve) insufficiency |
+# MAGIC | I652â€‚|â€‚ICD-10â€‚|â€‚â€‚â€‚â€‚Occlusion and stenosis of carotid artery |
+# MAGIC | I712â€‚| ICD-10â€‚â€‚â€‚| â€‚â€‚â€‚â€‚Thoracic aortic aneurysm, without mention of ruptureâ€‚| 
+# MAGIC | I771â€‚|â€‚ICD-10â€‚â€‚â€‚â€‚|â€‚â€‚Stricture of artery|
+# MAGIC | I776â€‚|â€‚ICD-10â€‚â€‚â€‚|â€‚â€‚â€‚Arteritis, unspecified|
+# MAGIC |M316â€‚|â€‚ICD-10â€‚â€‚â€‚|â€‚â€‚â€‚Other giant cell arteritis|
+# MAGIC |Z512â€‚|â€‚ICD-10â€‚â€‚â€‚|â€‚â€‚â€‚Other chemotherapy|
+# MAGIC |Z958â€‚|â€‚ICD-10â€‚â€‚â€‚â€‚|â€‚â€‚Presence of other cardiac and vascular implants and grafts|
+# MAGIC
+# MAGIC 4. Extract the occurence of the ICD-10 codes in HES OP for TA patients (either in HES APC or HES OP)
+# MAGIC 5. Extract the earliest attendance for rheumatology (410), renal medicine (361) or vascular surgery (107) under MAINSPEF/TRETSPEF in HES OP
+# MAGIC 6.  We will describe the cohort by
+# MAGIC   - age (EPISTART - MYDOB)
+# MAGIC   - sex (SEX)
+# MAGIC   - ethnicity (ETHNOS; the most frequent recorded ethnicity or the most recent used if two occurred equally).
+# MAGIC   - IMD mapped from either LSOA01, LSOA11, whichever is closest to the date of diagnosis. 
+# MAGIC 7. Date of death will be obtained through linkage to the Civil Registration Deaths dataset.
+# MAGIC 8. Final date and age adjustment (and exclusion based on <2 years old)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load functions
+# MAGIC
+# MAGIC Note: these functions will be updated in the nead future
+
+# COMMAND ----------
+
+# MAGIC %run /Workspace/Shared/SHDS/common/functions
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load the datasets and parameters from the previous netobook
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %run ./02_load_datasets
+
+# COMMAND ----------
+
+print(db)
+print(db_corporate)
+print(df_byod)
+print(dbc)
+print(dbc_write)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load  the last table from 03_mix_TAK_APC_OP notebook
+
+# COMMAND ----------
+
+df_tak = spark.table(f'{dbc_write}.ccu075_01_tak_apc_op_mm_20240725')
+
+
+# COMMAND ----------
+
+display(df_tak.limit(10))
+
+# COMMAND ----------
+
+count_var(df_tak, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+display(df_tak.groupBy(["flag_hes_apc_tak","flag_hes_op_tak"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Extract  the earliest attendance for rheumatology (410), renal medicine (361) or vascular surgery (107) under MAINSPEF/TRETSPEF
+# MAGIC
+# MAGIC Strategy:
+# MAGIC
+# MAGIC - Clean HES OP
+# MAGIC - Link with the cohort to have the date_of_birth available (for quality contorl)
+# MAGIC - Find the earliest date where MAINSPEF or TRETSPEF is in the values specified
+# MAGIC - Link back to the cohort. 
+
+# COMMAND ----------
+
+display(df_hes_op.limit(5))
+
+# COMMAND ----------
+
+# Make a clean HES OP table in long format for phenotype extraction
+
+df_hes_op_sel = df_hes_op.filter(f.col("PERSON_ID_DEID").isNotNull()).\
+    filter(f.col("APPTDATE").isNotNull()).\
+        select(["PERSON_ID_DEID", "APPTDATE", "MAINSPEF", "TRETSPEF",'PROCODE3', 'PROCODE5']).\
+  withColumnRenamed("PROCODE3", "OP_spec_PROCODE3").withColumnRenamed("PROCODE5", "OP_spec_PROCODE5")
+
+# COMMAND ----------
+
+df_temp_qc = df_tak.select(["PERSON_ID_DEID", "dob_apc_op"])
+df_join_op_qc = df_temp_qc.join(df_hes_op_sel, on= "PERSON_ID_DEID", how="left") 
+
+# COMMAND ----------
+
+# any apptdate < birthdate?
+print(df_join_op_qc.filter(f.col("APPTDATE")< f.col("dob_apc_op")).count())
+
+# COMMAND ----------
+
+# filter 
+df_join_op_qc = df_join_op_qc.filter(f.col("APPTDATE")>=f.col("dob_apc_op"))
+
+# COMMAND ----------
+
+# Keep only selected MAINSTEP/TRETSPEF
+spec_list = ["410", "361", "107"]
+df_specialty = df_join_op_qc.filter(\
+    (f.col("MAINSPEF").isin(spec_list)) | \
+    (f.col("TRETSPEF").isin(spec_list)))
+
+# COMMAND ----------
+
+# Keep the earliest attendance 
+w_spec = Window.partitionBy("PERSON_ID_DEID").orderBy(f.col("APPTDATE").asc())
+df_specialty = df_specialty.withColumn("spec_rank", f.row_number().over(w_spec))
+
+# COMMAND ----------
+
+display(df_specialty.limit(10))
+
+# COMMAND ----------
+
+df_specialty = df_specialty.\
+    filter(f.col("spec_rank")==1).\
+        withColumnRenamed("APPTDATE", "OP_spec_date").\
+            select(["PERSON_ID_DEID", "OP_spec_date", "MAINSPEF", "TRETSPEF", "OP_spec_PROCODE3", "OP_spec_PROCODE5"])
+
+# COMMAND ----------
+
+df_specialty = df_specialty.withColumn("flag_spec_hes_op", f.lit(1))
+
+# COMMAND ----------
+
+df_out = df_tak.select("PERSON_ID_DEID", "dob_apc_op").join(df_specialty, on=["PERSON_ID_DEID"],how="left")
+# age at OP specialityvisit event date 
+df_out = df_out.withColumn("OP_age_spec", f.floor(
+    f.datediff(
+        f.col("OP_spec_date"), f.col("dob_apc_op")
+    )/365.25
+))
+df_out = df_out.drop("dob_apc_op")
+
+df_out = df_out.fillna({"flag_spec_hes_op":0})        
+display(df_out.limit(5))                  
+
+# COMMAND ----------
+
+print(df_tak.select("PERSON_ID_DEID").distinct().count())
+print(df_out.select("PERSON_ID_DEID").distinct().count())
+
+# COMMAND ----------
+
+display(df_out.groupBy(["flag_spec_hes_op"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+df_out.write.mode('overwrite').saveAsTable(f'{dbc_write}.ccu075_01_specialties_op_mm_20240725_updated')

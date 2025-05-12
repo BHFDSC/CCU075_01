@@ -1,0 +1,141 @@
+---
+title: "Information for TAK cohort CONSORT"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("odbc", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("DBI", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+#load data
+library(odbc)
+library(DBI)
+con <- DBI::dbConnect(odbc:::odbc(), "databricks")
+cohort = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_df_final_20240822') # from 07_mix_step_2_of_3 (core table of cohort)
+lsoas_apc = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_hes_apc_temp_df_2') # from 13_curated_LSOA_hes_apc (2001 still to optimise; 2011 fine)
+lsoas_op = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_hes_op_temp_df_2') # from 16_curated_LSOA_hes_op (2001 still to optimise; 2011 fine)
+lsoa_2011_regions = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.hds_cur_lsoa_region_lookup') # Lookup table for LSOA to region
+denominators = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_region_age_sex_2006_2022_grouped') # ONS region data 2006-2022
+DBI::dbDisconnect(con)
+
+#Combine lsoas
+lsoas <- rbind(lsoas_apc, lsoas_op) %>%
+  select(PERSON_ID_DEID, LSOA11_curated_pre_index_date, info_LSOA_pre_index_date)
+
+#merge with LSOA11 at index date
+cohort_with_lsoa <- left_join(cohort, lsoas, by=c("PERSON_ID_DEID")) 
+```
+
+### Check cohort
+
+```{r cohort_with_lsoa}
+# Viable NHS numbers?
+# summary(as.factor(cohort_with_lsoa$NHSNOIND_hes_apc)) # All 01/1 AND NAs which corresponds to OP-only diagnoses
+# summary(as.factor(cohort_with_lsoa$NHSNOIND_hes_op)) # All 01/1 AND NAs
+
+# Viable diagnosis dates?
+# summary(as.Date(cohort_with_lsoa$final_diag_date)) # Complete list of adjusted diagnosis dates
+
+# Viable ages at diagnosis?
+# summary(as.numeric(cohort_with_lsoa$final_age)) # Complete list of adjusted ages at diagnosis
+# min(as.numeric(cohort_with_lsoa$final_age)) # Lowest number is 0 therefore we need to remove those < 2 years
+# summary(as.factor(cohort_with_lsoa$final_age < 2))
+
+#Remove individuals less than 2 years at adjusted diagnosis date
+cohort_over_2 <- cohort_with_lsoa %>%
+  filter(as.numeric(final_age) >= 2)
+
+# Viable demographics?
+# summary(as.factor(cohort_over_2$SEX)) # Need to lookup values
+# summary(as.factor(cohort_over_2$ETHNOS)) # Need to lookup values
+# summary(as.factor(is.na(cohort_over_2$LSOA11_curated_pre_index_date))) #Complete LSOA11 data 
+# summary(as.factor(cohort_over_2$info_LSOA_pre_index_date)) 
+# summary(as.factor(grepl("E", cohort_over_2$LSOA11_curated_pre_index_date, fixed=TRUE))) # non English LSOAs need to be removed
+
+#Remove non-English residents
+cohort_England <- cohort_over_2 %>%
+  filter(grepl("E", LSOA11_curated_pre_index_date, fixed=TRUE))
+
+# Viable death linkage?
+# summary(as.Date(cohort_England$REG_DATE_OF_DEATH)) # List of viable dates of death and NAs
+# summary(as.factor(cohort_England$is_dead)) # NAs above correspond to binary indicator
+
+prevalence_cohort_England <- cohort_England %>%
+  filter(REG_DATE_OF_DEATH > "2022-07-01" | is.na(REG_DATE_OF_DEATH)) %>%
+  filter(final_diag_date <= "2022-07-01") %>%
+  select(PERSON_ID_DEID, final_diag_date, REG_DATE_OF_DEATH, LSOA11_curated_pre_index_date) # select only relevant date and demographics
+
+# Viable diagnosis dates post filter?
+# summary(as.Date(prevalence_cohort_England$final_diag_date)) # Adjusted diagnosis dates all < 1st July 2022
+
+# Viable death dates post filter?
+# summary(as.Date(prevalence_cohort_England$REG_DATE_OF_DEATH)) # All dates of death > 1st July 2022 and NAs
+# summary(as.factor(prevalence_cohort_England$is_dead)) # Returns 0
+
+# Merge in LSOA11 data
+lsoa_regions_prev <- lsoa_2011_regions %>%
+  select(lsoa_code, region_code, region_name)
+
+prevalence_cohort_regions <- left_join(prevalence_cohort_England, lsoa_regions_prev, by=c("LSOA11_curated_pre_index_date" = "lsoa_code")) %>%
+  group_by(region_code, region_name) %>%
+  summarise(cases = n(),
+            cases_for_publication = ifelse(n()>9, 5*round(n()/5,0),0)) %>% # Suppression of small counts built in here
+  ungroup() 
+
+total_cases <- sum(prevalence_cohort_regions$cases) # agrees with total size of cohort
+total_cases_for_publication <- 5*round(total_cases/5,0)
+#sum(prevalence_cohort_regions$cases_for_publication) # doesn't agree with the rounded real total so footnote is required
+```
+
+
+```{r consort}
+# Counts for consort
+# Some hardcoded from databricks notebook 07_mix_step_2_of_3)
+# Some rows redacted where superseded by newer scripts to avoid confusion
+# Unrounded counts were exported for full transparency in cohort creation. Output checkers approved this alongside the contextual information below.
+
+consort_data <- data.frame(rbind( c("Unique patients with ICD-10 code M31.4 in APC", 2005),
+                                 c("Unique patients with ICD-10 code M31.4 in APC with valid NHS ID", length(lsoas_apc$PERSON_ID_DEID)),
+                                 c("Unique patients with ICD-10 code M31.4 in OP", 326),
+                                 c("Unique patients with ICD-10 code M31.4 in OP not already in APC and with valid NHS ID", length(lsoas_op$PERSON_ID_DEID))
+))
+
+consort_data %>%
+  kable(booktabs=TRUE, align="l", col.names = c("Consort element",
+                                                "Count"))
+
+# write.csv2(consort_data, "ccu075_01_consort_data_20240827.csv")
+
+# Contextual information
+# Counts to populate a consort diagram for creation of our cohort (cases of Takayasu arteritis, ICD-10 M31.4)
+# 
+# Column 1: Description of the count
+# Column 2*: Number of cases
+# 
+# *Indicates unrounded rates for full transparency in cohort creation. There are no values less than 50. If this cannot be permitted, please advise on the convention for such data.
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

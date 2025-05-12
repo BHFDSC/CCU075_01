@@ -1,0 +1,364 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Code to add age, sex, ethnicity, and death data
+# MAGIC
+# MAGIC Description: The notebook adds age, sex, ethnicity and mortality data for the TAK cohort. It also contains cells to harvest the total number of unique patients in HES APC and HES OP for inclusion in the TAK cohort CONSORT diagram.
+# MAGIC
+# MAGIC Authors and Reviewers: Mehrdad Mizani, Stephanie Lax
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load functions
+
+# COMMAND ----------
+
+# MAGIC %run /Workspace/Shared/SHDS/common/functions
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load the datasets and parameters from the previous netobook
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %run ./02_load_datasets
+
+# COMMAND ----------
+
+# Number of unique patients in HES APC for CONSORT diagram
+print(df_hes_apc.select("PERSON_ID_DEID").distinct().count())
+
+# COMMAND ----------
+
+# Number of unique patients in HES OP for CONSORT diagram
+print(df_hes_op.select("PERSON_ID_DEID").distinct().count())
+
+# COMMAND ----------
+
+print(db)
+print(db_corporate)
+print(df_byod)
+print(dbc)
+print(dbc_write)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load  the last table from 07_mix_step_2_of_3
+
+# COMMAND ----------
+
+df_mix = spark.table(f'{dbc_write}.ccu075_01_joined_table_2_of_3_20240725_updated')
+
+# COMMAND ----------
+
+display(df_mix.limit(10))
+
+# COMMAND ----------
+
+count_var(df_mix, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+display(df_mix.groupBy(["flag_hes_apc_tak","flag_hes_op_tak"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+display(df_mix.groupBy(["flag_hes_apc_tak","flag_hes_op_tak", "flag_icd10_hes_apc"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+display(df_mix.groupBy(["flag_hes_apc_tak","flag_hes_op_tak", "flag_icd10_hes_op"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+display(df_mix.groupBy(["flag_hes_apc_tak","flag_hes_op_tak", "flag_icd10_hes_apc", "flag_icd10_hes_op", "flag_spec_hes_op"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Add age
+# MAGIC
+
+# COMMAND ----------
+
+df_mix.columns
+
+# COMMAND ----------
+
+# Check adjusted age
+display(df_mix.select(["PERSON_ID_DEID", "flag_hes_apc_tak","flag_hes_op_tak","dob_apc_curated", "dob_op", "dob_apc_op", "APC_m314_event_date", "OP_m314_event_date", "APC_ICD10_CODE_date", "OP_ICD10_CODE_date", "OP_spec_date", "adjusted_diag_date"]))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+# MAGIC Age adjusted = Difference between adjusted_diag_date and dob_apc_op. First check for nulls
+
+# COMMAND ----------
+
+# First check for nulls
+print(df_mix.filter(f.col("dob_apc_op").isNull()).count())
+print(df_mix.filter(f.col("adjusted_diag_date").isNull()).count())
+
+# COMMAND ----------
+
+# Any adjusted date before dob_apc_op?
+print(df_mix.filter(f.col("adjusted_diag_date")<f.col("dob_apc_op")).count())
+
+# COMMAND ----------
+
+# check these:
+display(df_mix.filter(f.col("adjusted_diag_date")<f.col("dob_apc_op")))
+
+# COMMAND ----------
+
+display(df_mix.filter(f.col("adjusted_diag_date")<f.col("dob_apc_op")).select(["PERSON_ID_DEID", "flag_hes_apc_tak","flag_hes_op_tak","dob_apc_curated", "dob_op", "dob_apc_op", "APC_m314_event_date", "OP_m314_event_date", "APC_ICD10_CODE_date", "OP_ICD10_CODE_date", "OP_spec_date", "adjusted_diag_date"]))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Strategy: 
+# MAGIC Make a new adjusted_APC_m314_event_date. Replace APC_m314_event_date with dob_apc_curated if dbo_apc_curated>APC_m314_event_date. Then recalculate adjusted_diag_date and call it Final_adjusted_date
+
+# COMMAND ----------
+
+df_mix_2 = df_mix.withColumn("adjusted_APC_m314_event_date", f.when(f.col("APC_m314_event_date")<f.col("dob_apc_curated"), f.col("dob_apc_curated")).otherwise(f.col("APC_m314_event_date")))
+
+# COMMAND ----------
+
+display(df_mix_2.filter(f.col("adjusted_diag_date")<f.col("dob_apc_op")).select(["PERSON_ID_DEID", "flag_hes_apc_tak","flag_hes_op_tak","dob_apc_curated", "dob_op", "dob_apc_op", "APC_m314_event_date","adjusted_APC_m314_event_date", "OP_m314_event_date", "APC_ICD10_CODE_date", "OP_ICD10_CODE_date", "OP_spec_date", "adjusted_diag_date"]))
+
+# COMMAND ----------
+
+# Minimum of adjusted_APC_m314_event_date, OP_m314_event_date, APC_ICD10_CODE_date, OP_ICD10_CODE_date, OP_spec_date
+df_mix_2 = df_mix_2.\
+    withColumn("final_diag_date", f.least(f.col("adjusted_APC_m314_event_date"),\
+        f.col("OP_m314_event_date"),\
+            f.col("APC_ICD10_CODE_date"),\
+                f.col("OP_ICD10_CODE_date"),\
+                    f.col("OP_spec_date")
+        ))
+
+# COMMAND ----------
+
+df_mix_2 = df_mix_2.withColumn("final_age", f.floor(
+    f.datediff(
+        f.col("final_diag_date"), f.col("dob_apc_op")
+    )/365.25
+))
+
+# COMMAND ----------
+
+# check
+display(df_mix_2.filter(f.col("adjusted_diag_date")<f.col("dob_apc_op")).select(["PERSON_ID_DEID", "flag_hes_apc_tak","flag_hes_op_tak","dob_apc_curated", "dob_op", "dob_apc_op", "APC_m314_event_date","adjusted_APC_m314_event_date", "OP_m314_event_date", "APC_ICD10_CODE_date", "OP_ICD10_CODE_date", "OP_spec_date", "adjusted_diag_date", "final_diag_date", "final_age"]))
+
+# COMMAND ----------
+
+# Check all
+display(df_mix_2.select(["PERSON_ID_DEID", "flag_hes_apc_tak","flag_hes_op_tak","dob_apc_curated", "dob_op", "dob_apc_op", "APC_m314_event_date","adjusted_APC_m314_event_date", "OP_m314_event_date", "APC_ICD10_CODE_date", "OP_ICD10_CODE_date", "OP_spec_date", "adjusted_diag_date", "final_diag_date", "final_age"]))
+
+# COMMAND ----------
+
+# Final age
+df_mix_2.select(["final_age"]).describe().show()
+
+# COMMAND ----------
+
+display(df_mix_2.select(["final_age"]))
+
+# COMMAND ----------
+
+# How many <2 years old?
+display(df_mix_2.filter(f.col("final_age")<2).count())
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Add sex and ethnicity
+
+# COMMAND ----------
+
+df_sex = spark.table(f'{dbc_write}.ccu075_01_sex_mm_20240725_updated')
+display(df_sex)
+
+# COMMAND ----------
+
+df_mix_2.count()
+
+# COMMAND ----------
+
+df_eth = spark.table(f'{dbc_write}.ccu075_01_eth_mm_20240725_updated')
+display(df_eth)
+
+# COMMAND ----------
+
+df_final = df_mix_2.join(df_sex, on= ["PERSON_ID_DEID"], how="left")
+df_final = df_final.join(df_eth, on= ["PERSON_ID_DEID"], how="left")
+
+# COMMAND ----------
+
+display(df_final)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Add death
+
+# COMMAND ----------
+
+df_final.count()
+
+# COMMAND ----------
+
+id_df = df_final.select("PERSON_ID_DEID")
+
+# COMMAND ----------
+
+# Death table
+display(df_deaths.limit(10))
+
+# COMMAND ----------
+
+# Drop any null IDs or dates from death table, and rename ID columns
+df_deaths = df_deaths.filter(f.col("DEC_CONF_NHS_NUMBER_CLEAN_DEID").isNotNull()).\
+    filter(f.col("REG_DATE_OF_DEATH").isNotNull()).\
+        withColumnRenamed("DEC_CONF_NHS_NUMBER_CLEAN_DEID", "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+# join with cohort IDs
+cohort_deaths = id_df.join(df_deaths, on= ["PERSON_ID_DEID"], how = "inner")
+
+# COMMAND ----------
+
+# How many IDs appear in deaths dataset?
+cohort_deaths.select("PERSON_ID_DEID").distinct().count()
+
+# COMMAND ----------
+
+# Are there records with multiple death date per person?
+w = Window.partitionBy(["PERSON_ID_DEID"]).orderBy(f.col("REG_DATE_OF_DEATH").asc())
+cohort_deaths = cohort_deaths.withColumn("rank", f.dense_rank().over(w))
+
+# COMMAND ----------
+
+display(cohort_deaths.filter(f.col("rank")>1))
+
+# COMMAND ----------
+
+# Confirm there are no multiple dates of death by counting
+print(cohort_deaths.count())
+print(cohort_deaths.select("PERSON_ID_DEID").distinct().count())
+
+# COMMAND ----------
+
+# Select relevant columns and add a death flag
+cohort_deaths = cohort_deaths.select(["PERSON_ID_DEID", "REG_DATE_OF_DEATH"]).\
+    withColumn("is_dead", f.lit(1))
+
+# COMMAND ----------
+
+# Join with the cohort
+df_final_with_deaths = df_final.join(cohort_deaths, on= ["PERSON_ID_DEID"], how="left")
+df_final_with_deaths = df_final_with_deaths.withColumn("is_dead", f.when(f.col("is_dead").isNull(), f.lit(0)).otherwise(f.col("is_dead")))
+
+# COMMAND ----------
+
+display(df_final_with_deaths.groupBy("is_dead").agg(f.count("*")))
+
+# COMMAND ----------
+
+display(df_final_with_deaths.groupBy(["flag_hes_apc_tak", "flag_hes_op_tak", "is_dead"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# Any death date before the endpoint dates
+print(df_final_with_deaths.filter(f.col("REG_DATE_OF_DEATH")< f.col("adjusted_diag_date")).count())
+
+# COMMAND ----------
+
+print(df_final_with_deaths.filter(f.col("REG_DATE_OF_DEATH")< "2022-07-01").count())
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Save
+
+# COMMAND ----------
+
+df_final_with_deaths.write.mode('overwrite').saveAsTable(f'{dbc_write}.ccu075_01_df_final_20240822_updated')
+
+# COMMAND ----------
+
+df_final_with_deaths = spark.table(f'{dbc_write}.ccu075_01_df_final_20240822_updated')
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+# MAGIC # Important columns
+
+# COMMAND ----------
+
+df_final_with_deaths.columns
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+# MAGIC - Final diag_date
+# MAGIC - Final age
+# MAGIC - Flags:
+# MAGIC   - flag_hes_apc_tak
+# MAGIC   - flag_hes_op_tak
+# MAGIC   - flag_icd10_hes_apc
+# MAGIC   - flag_icd10_hes_op
+# MAGIC   - flag_spec_hes_op
+# MAGIC   - is_dead
+# MAGIC - Event date columns
+# MAGIC   - HES APC TAK: adjusted_APC_m314_event_date
+# MAGIC   - HES OP TAK: OP_m314_event_date
+# MAGIC   - APC_ICD10_CODE_date
+# MAGIC   - OP_ICD10_CODE_date
+# MAGIC   - OP_spec_date
+# MAGIC   - REG_DATE_OF_DEATH (date of death; null for alive patients)
+# MAGIC - Data of birth
+# MAGIC   - In HES APC: dob_apc_curated
+# MAGIC   - In HES OP: dob_op
+# MAGIC   - HES APC+ HES OP = dob_apc_op
+# MAGIC - Other
+# MAGIC   - SEX
+# MAGIC   - ETHNOS
+# MAGIC - Proccodes
+# MAGIC   - APC_m314_PROCODE3
+# MAGIC   - APC_m314_PROCODE5
+# MAGIC   - OP_m314_PROCODE3
+# MAGIC   - OP_m314_PROCODE5
+# MAGIC   - APC_m314_PROCODE3
+# MAGIC   - APC_m314_PROCODE5
+# MAGIC   - APC_ICD10_PROCODE3
+# MAGIC   - APC_ICD10_PROCODE5
+# MAGIC   - OP_ICD10_PROCODE3
+# MAGIC   - OP_ICD10_PROCODE5
+# MAGIC   - OP_spec_PROCODE3
+# MAGIC   - OP_spec_PROCODE5
+# MAGIC
+
+# COMMAND ----------
+
+count_var(df_final_with_deaths, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+df_test = spark.table(f'{dbc_write}.ccu075_01_df_final_20240822_updated')
+
+# COMMAND ----------
+
+df_test.columns
+
+# COMMAND ----------
+
+df_test.filter(f.col("adjusted_diag_date")!=f.col("final_diag_date")).count()

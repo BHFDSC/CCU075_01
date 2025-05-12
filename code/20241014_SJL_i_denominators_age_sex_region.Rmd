@@ -1,0 +1,71 @@
+---
+title: "Grouping of ONS population data by age, sex, and region"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("odbc", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("DBI", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+
+# Get cohort data
+incidence_cohort_England <- read.csv2("ccu075_01_M314_cohort_20240925.csv")
+
+# Get denominator data
+library(odbc)
+library(DBI)
+con <- DBI::dbConnect(odbc:::odbc(), "databricks")
+denominators2 = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_region_age_sex_2006_2022') # ONS region data 2006-2022 ungrouped
+DBI::dbDisconnect(con)
+
+denominators <- denominators2 %>%
+  gather(key = "Group", value="Population", -c("Year", "Code", "Government_Office_Regions")) %>%
+  filter(!grepl("All", Group, fixed=TRUE)) %>%
+  mutate(sex = ifelse(grepl("Females", Group, fixed=TRUE), "Female", "Male"),
+         Age = as.numeric(ifelse(sex == "Female", substring(Group, 17, 19), substring(Group, 15, 17)))) %>%
+  mutate(age_group = case_when(
+    Age <= 15 ~ "0-15",
+    Age > 15 & Age <= 39 ~ "16-39",
+    Age > 39 & Age <= 54 ~ "40-54",
+    Age > 54 & Age <= 69 ~ "55-69",
+    Age > 69 & Age <= 84 ~ "70-84",
+    Age > 84 ~ "85-90"
+  ),
+  age_group = factor(age_group, 
+                     level=c("0-15", "16-39", "40-54", "55-69", "70-84", "85-90")
+  )
+  ) %>%
+  select(-Group) %>%
+  group_by(Year, sex, age_group, Code) %>%
+  summarise(total_population = sum(as.numeric(Population), na.rm=TRUE)) %>%
+  ungroup()
+
+# sum(denominators$total_population) - checked and looks good
+#write.csv(denominators, "ccu075_01_denominators_i_age_group_sex_region_20241014.csv")
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

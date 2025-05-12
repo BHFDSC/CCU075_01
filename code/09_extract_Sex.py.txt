@@ -1,0 +1,297 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # CCU075_01: Sex
+# MAGIC
+# MAGIC Description: The notebook finds sex data for the TAK cohort using HES APC, HES OP, or the patient characteristics table.
+# MAGIC
+# MAGIC Authors and Reviewers: Mehrdad Mizani, Stephanie Lax
+# MAGIC
+# MAGIC Strategy:
+# MAGIC - From HES APC first
+# MAGIC - For those not in HES APC: follow the same method and extract from HES OP
+# MAGIC - For any remaining: use the patient characteristcs table to extract from HES A&E and GDPPR
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load functions
+# MAGIC
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %run /Workspace/Shared/SHDS/common/functions
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load the datasets and parameters from the previous netobook
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %run ./02_load_datasets
+
+# COMMAND ----------
+
+print(db)
+print(db_corporate)
+print(df_byod)
+print(dbc)
+print(dbc_write)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load  the mix table (step 2 of 3)
+
+# COMMAND ----------
+
+df_mix = spark.table(f'{dbc_write}.ccu075_01_joined_table_2_of_3_20240725_updated')
+
+# COMMAND ----------
+
+display(df_mix.limit(10))
+
+# COMMAND ----------
+
+count_var(df_mix, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+display(df_mix.groupBy(["flag_hes_apc_tak","flag_hes_op_tak"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+# MAGIC Split into records in HES APC and in HES OP only
+# MAGIC
+
+# COMMAND ----------
+
+df_mix_apc = df_mix.filter(f.col("flag_hes_apc_tak")==1)
+df_mix_op = df_mix.filter(f.col("flag_hes_apc_tak")==0)
+
+# COMMAND ----------
+
+print(df_mix_apc.count())
+print(df_mix_op.count())
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Sex from HES AP
+
+# COMMAND ----------
+
+# Extract IDs to join with HES APC
+ids_hes_apc = df_mix_apc.select("PERSON_ID_DEID")
+
+# COMMAND ----------
+
+# Left join with hes for sex
+df_sex_apc_1 = ids_hes_apc.join(df_hes_apc.select(["PERSON_ID_DEID", "SEX", "EPISTART"]), on=["PERSON_ID_DEID"], how="left" )
+
+# COMMAND ----------
+
+# Sex codes
+display(df_sex_apc_1.groupby("SEX").agg(f.count("*")))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+# MAGIC - 1:Male
+# MAGIC - 2:Female
+# MAGIC - 9:Not specified (indeterminate, i.e. unable to be classified as either male or female)
+# MAGIC - 0:Not known (not recorded)
+# MAGIC - 3:Indeterminate, including those undergoing sex change operations
+
+# COMMAND ----------
+
+# Test of duplicated epistart
+w_test = Window.partitionBy(["PERSON_ID_DEID", "EPISTART"]).orderBy(f.col("EPISTART"))
+df_tst = df_sex_apc_1.withColumn("rank", f.row_number().over(w_test))
+display(df_tst.filter(f.col('rank')>1))
+
+# COMMAND ----------
+
+# Test of duplicated sex code per epistart
+w_test2 = Window.partitionBy(["PERSON_ID_DEID", "EPISTART"]).orderBy(f.col("SEX"))
+df_tst2 = df_sex_apc_1.withColumn("rank", f.dense_rank().over(w_test2))
+display(df_tst2.filter(f.col("rank")>1))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Strategy for sex code
+# MAGIC
+# MAGIC - Keep unique combinations of epistart and sex
+# MAGIC   - e.g., if sex 1 is recorded twice on 2023-12-21, keep only one
+# MAGIC - Count each sex code per person
+# MAGIC - Sort by the count (descending) and epistart (ascnding)
+# MAGIC - Select the first sex code 
+
+# COMMAND ----------
+
+# Keep unique combination of SEX and epistart 
+# The orderby is not adding anything to the logic of the Window. It is just needed by the row_number()
+w_dup = Window.partitionBy(["PERSON_ID_DEID", "SEX", "EPISTART"]).orderBy(f.col("EPISTART"))
+df_sex_apc_2 = df_sex_apc_1.withColumn("sex_order", f.row_number().over(w_dup))
+df_sex_apc_2 = df_sex_apc_2.filter(f.col("sex_order")==1).drop("sex_order")
+
+# COMMAND ----------
+
+# Define the window function for counting different sex codes per person
+w_sex_2= Window.partitionBy(["PERSON_ID_DEID", "SEX"])
+df_sex_apc_3 = df_sex_apc_2.withColumn("sex_count", f.count("SEX").over(w_sex_2))
+
+# COMMAND ----------
+
+# Keep one row per person+sex with most recent EPISTART
+w_sex_3= Window.partitionBy(["PERSON_ID_DEID", "SEX"]).orderBy(f.col("EPISTART").desc_nulls_last())
+df_sex_apc_4 = df_sex_apc_3.withColumn("sex_rank", f.row_number().over(w_sex_3))
+df_sex_apc_4 = df_sex_apc_4.filter(f.col("sex_rank")==1).drop("sex_rank")
+
+# COMMAND ----------
+
+# Order by EPISTART (descending)+count (descending)  and keep the first row
+w_sex_4 = Window.partitionBy(["PERSON_ID_DEID"]).orderBy(f.col("sex_count").desc(), f.col("EPISTART").desc_nulls_last())
+df_sex_apc_5 = df_sex_apc_4.withColumn("final_rank", f.row_number().over(w_sex_4))
+
+# COMMAND ----------
+
+# final table 
+df_sex_apc_final = df_sex_apc_5.filter(f.col("final_rank")==1).drop("sex_count").drop("final_rank").drop("EPISTART")
+
+# COMMAND ----------
+
+df_sex_apc_final.cache()
+
+# COMMAND ----------
+
+print(df_sex_apc_final.select("PERSON_ID_DEID").count())
+print(df_sex_apc_final.select("PERSON_ID_DEID").distinct().count())
+
+# COMMAND ----------
+
+# Any null sex?
+df_sex_apc_final.filter(f.col("SEX").isNull()).count()
+
+# COMMAND ----------
+
+# Sex codes
+display(df_sex_apc_final.groupby("SEX").agg(f.count("*")))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC #SEX from HES OP
+
+# COMMAND ----------
+
+# Extract IDs to join with HES OP
+ids_hes_op = df_mix_op.select("PERSON_ID_DEID")
+
+# COMMAND ----------
+
+ids_hes_op.count()
+
+# COMMAND ----------
+
+# Left join with hes for sex
+df_sex_op_1 = ids_hes_op.join(df_hes_op.select(["PERSON_ID_DEID", "SEX", "APPTDATE"]), on=["PERSON_ID_DEID"], how="left" )
+
+# COMMAND ----------
+
+# SEX codes
+display(df_sex_op_1.groupby("SEX").agg(f.count("*")))
+
+# COMMAND ----------
+
+# Test of duplicated epistart
+w_test_op = Window.partitionBy(["PERSON_ID_DEID", "APPTDATE"]).orderBy(f.col("APPTDATE"))
+df_tst_op = df_sex_op_1.withColumn("rank", f.row_number().over(w_test_op))
+display(df_tst_op.filter(f.col('rank')>1))
+
+# COMMAND ----------
+
+# Keep unique combination of SEX and APPTDATE 
+# The orderby does not add anything to the logic of the Window. It is just needed by the row_number()
+w_dup_op = Window.partitionBy(["PERSON_ID_DEID", "SEX", "APPTDATE"]).orderBy(f.col("APPTDATE"))
+df_sex_op_2 = df_sex_op_1.withColumn("sex_order", f.row_number().over(w_dup_op))
+df_sex_op_2 = df_sex_op_2.filter(f.col("sex_order")==1).drop("sex_order")
+
+# COMMAND ----------
+
+# Define the window funciton for counting different sex codes per person
+w_sex_2_op= Window.partitionBy(["PERSON_ID_DEID", "SEX"])
+df_sex_op_3 = df_sex_op_2.withColumn("sex_count", f.count("SEX").over(w_sex_2_op))
+
+# COMMAND ----------
+
+# Keep one row per person+ethnos with most recent APPTDATE
+w_sex_3_op= Window.partitionBy(["PERSON_ID_DEID", "APPTDATE"]).orderBy(f.col("APPTDATE").desc_nulls_last())
+df_sex_op_4 = df_sex_op_3.withColumn("sex_rank", f.row_number().over(w_sex_3_op))
+df_sex_op_4 = df_sex_op_4.filter(f.col("sex_rank")==1).drop("sex_rank")
+
+# COMMAND ----------
+
+# Order by APPTDATE (descending)+count (descending)  and keep the first row
+w_sex_4_op = Window.partitionBy(["PERSON_ID_DEID"]).orderBy(f.col("sex_count").desc(), f.col("APPTDATE").desc_nulls_last())
+df_sex_op_5 = df_sex_op_4.withColumn("final_rank", f.row_number().over(w_sex_4_op))
+
+# COMMAND ----------
+
+# final table 
+df_sex_op_final = df_sex_op_5.filter(f.col("final_rank")==1).drop("sex_count").drop("final_rank").drop("APPTDATE")
+
+# COMMAND ----------
+
+df_sex_op_final.cache()
+
+# COMMAND ----------
+
+print(df_sex_op_final.select("PERSON_ID_DEID").count())
+print(df_sex_op_final.select("PERSON_ID_DEID").distinct().count())
+
+# COMMAND ----------
+
+# Any null sex?
+df_sex_op_final.filter(f.col("SEX").isNull()).count()
+
+# COMMAND ----------
+
+# Sex codes
+display(df_sex_op_final.groupby("SEX").agg(f.count("*")))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+# MAGIC # Union of HES APC and HES OP sex and join with the cohort
+
+# COMMAND ----------
+
+df_sex_apc_final = df_sex_apc_final.withColumn("sex_source", f.lit("HES APC"))
+df_sex_op_final = df_sex_op_final.withColumn("sex_source", f.lit("HES OP"))
+df_sex_union = df_sex_apc_final.union(df_sex_op_final)
+
+# COMMAND ----------
+
+display(df_sex_union.groupBy("sex_source").agg(f.count("*")))
+
+# COMMAND ----------
+
+print(df_sex_union.select("PERSON_ID_DEID").count())
+print(df_sex_union.select("PERSON_ID_DEID").distinct().count())
+
+# COMMAND ----------
+
+display(df_sex_union)
+
+# COMMAND ----------
+
+# Save a temporary checkpoint
+df_sex_union.write.mode('overwrite').saveAsTable(f'{dbc_write}.ccu075_01_sex_mm_20240725_updated')

@@ -1,0 +1,107 @@
+---
+title: "Incidence estimates for Takayasu arteritis in England"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+
+# Get cohort data
+incidence_cohort_England <- read.csv2("ccu075_01_M314_cohort_20240925.csv") %>%
+  mutate(setting = ifelse(flag_hes_apc_tak == 1 & flag_hes_op_tak == 0, "APC_alone", "OP"),
+         apc_post_covid_flag = ifelse(flag_hes_apc_tak == 1 & APC_m314_event_date >= "2020-03-11", 1, 0),
+         op_post_covid_flag = ifelse(flag_hes_op_tak == 1 & OP_m314_event_date >= "2020-03-11", 1, 0)) 
+
+cases_by_trust <- incidence_cohort_England %>%
+  select(PERSON_ID_DEID, flag_hes_apc_tak, flag_hes_op_tak, setting, APC_m314_event_date, apc_post_covid_flag, APC_m314_PROCODE3, 
+         OP_m314_event_date, op_post_covid_flag, OP_m314_PROCODE3)
+
+#summary(as.factor(incidence_cohort_England$flag_hes_apc_tak))
+#summary(as.factor(incidence_cohort_England$flag_hes_op_tak))
+#summary(as.factor(incidence_cohort_England$setting)) - looks good and adds up to total
+```
+
+### Coding practise by trust pre and post COVID-19 
+
+```{r trust}
+#overall
+apc_trusts <- cases_by_trust %>%
+  filter(flag_hes_apc_tak == 1)
+
+op_trusts <- cases_by_trust %>%
+  filter(flag_hes_op_tak == 1)
+
+unique_op_trusts <- unique(op_trusts$OP_m314_PROCODE3)
+unique_trusts_overall <- unique(c(unique(apc_trusts$APC_m314_PROCODE3), unique_op_trusts))
+unique_apc_only_trusts <- unique_trusts_overall[!unique_trusts_overall %in% unique_op_trusts]
+
+#pre covid
+apc_trusts_pre_covid <- apc_trusts %>%
+  filter(apc_post_covid_flag == 0)
+
+op_trusts_pre_covid <- op_trusts %>%
+  filter(op_post_covid_flag == 0)
+
+pre_covid_unique_op_trusts <- unique(op_trusts_pre_covid$OP_m314_PROCODE3)
+pre_covid_unique_trusts_overall <- unique(c(unique(apc_trusts_pre_covid$APC_m314_PROCODE3), pre_covid_unique_op_trusts))
+pre_covid_unique_apc_only_trusts <- pre_covid_unique_trusts_overall[!pre_covid_unique_trusts_overall %in% pre_covid_unique_op_trusts]
+
+#post covid
+apc_trusts_post_covid <- apc_trusts %>%
+  filter(apc_post_covid_flag == 1)
+
+op_trusts_post_covid <- op_trusts %>%
+  filter(op_post_covid_flag == 1)
+
+post_covid_unique_op_trusts <- unique(op_trusts_post_covid$OP_m314_PROCODE3)
+post_covid_unique_trusts_overall <- unique(c(unique(apc_trusts_post_covid$APC_m314_PROCODE3), post_covid_unique_op_trusts))
+post_covid_unique_apc_only_trusts <- post_covid_unique_trusts_overall[!post_covid_unique_trusts_overall %in% post_covid_unique_op_trusts]
+
+provider_summary <- data.frame(rbind(c("Number of unique providers coding TAK overall", length(unique_trusts_overall)),
+                                     c("Number of unique providers coding TAK pre-COVID-19", length(pre_covid_unique_trusts_overall)),
+                                     c("Number of unique providers coding TAK post-COVID-19", length(post_covid_unique_trusts_overall)),
+                                     c("Number of unique providers coding TAK in OP", length(unique_op_trusts)),
+                                     c("Number of providers coding TAK in OP (pre-COVID-19)", length(pre_covid_unique_op_trusts)),
+                                     c("Number of providers coding TAK in OP (post-COVID-19)", length(post_covid_unique_op_trusts))))
+
+colnames(provider_summary) <- c("Description", "N")
+```
+
+
+### Export
+
+```{r export}
+#write.csv(provider_summary, "ccu075_01_OP_provider_coding_and_COVID19_20250108.csv")
+
+# Contextual information
+# Number of providers coding Takayasu arteritis (M31.4) overall compared to OP in England pre- and post-COVID-19
+# 
+# Column 1: Description
+# Column 2: Number of providers (please note these are not case counts and so do not need to be rounded)
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

@@ -1,0 +1,57 @@
+---
+title: "Dataset comparison checks"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#install packages at first use
+#install.packages("compare", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+library(compare)
+library(tidyverse)
+```
+
+## Comparison
+
+I noted two different versions of the prevalent cohort had been used in October 2023. I wanted to compare them to ensure they were the same:
+
+```{r cars}
+setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+
+# Get cohort data
+prevalence_cohort_England <- read.csv2("ccu075_01_M314_p_cohort_20241003.csv")
+prevalence_cohort_England2 <- read.csv2("ccu075_01_M314_p_cohort_20241007.csv")
+
+#the same number of rows exist in both datasets, but the number of columns differs.
+
+summary(compare(prevalence_cohort_England, prevalence_cohort_England2)) # the output here was unhelpful and didn't resemble the documentation
+summary(compare(prevalence_cohort_England[,1:63], prevalence_cohort_England2[,1:63])) # the output didn't change when I restricted to the first 63 columns 
+
+#s I compared the lists of names to try and identify the new columns:
+names(prevalence_cohort_England)
+names(prevalence_cohort_England2)
+
+names(prevalence_cohort_England2)[!names(prevalence_cohort_England2) %in% names(prevalence_cohort_England)] # only the final two columns were different. These were age_at_index and age_group_index which were not required for the supplementary analysis of the intersections between ethnicity, IMD, and region
+
+# Therefore, I checked these variables were identical:
+summary(prevalence_cohort_England$Eth_grouped == prevalence_cohort_England2$Eth_grouped) # this came back with ~50% false, so I sorted both on PERSON_ID_DEID
+
+prevalence_cohort_England_sorted <- prevalence_cohort_England %>%
+  arrange(PERSON_ID_DEID)
+
+prevalence_cohort_England_sorted2 <- prevalence_cohort_England2 %>%
+  arrange(PERSON_ID_DEID)
+
+summary(prevalence_cohort_England_sorted$PERSON_ID_DEID == prevalence_cohort_England_sorted2$PERSON_ID_DEID) # this returned 100% true
+
+# Then I tried the comparisons of variables of interest again:
+summary(prevalence_cohort_England_sorted$Eth_grouped == prevalence_cohort_England_sorted2$Eth_grouped) 
+summary(prevalence_cohort_England_sorted$region_code == prevalence_cohort_England_sorted2$region_code)
+summary(prevalence_cohort_England_sorted$LSOA11_curated_pre_index_date == prevalence_cohort_England_sorted2$LSOA11_curated_pre_index_date)
+# all of these returned 100% true, so the previous cohort was adequate for the sensitivity analyses done on 3rd October 2024
+```

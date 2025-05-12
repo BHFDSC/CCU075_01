@@ -1,0 +1,401 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # CCU075_01: TAK cohort creation in HES OP
+# MAGIC
+# MAGIC Description: Extraction of TAK records from HES OP
+# MAGIC
+# MAGIC Authors and Reviewers: Mehrdad Mizani, Stephanie Lax
+# MAGIC
+# MAGIC General plan:  
+# MAGIC - TA in HES APC
+# MAGIC - TA in HES OP (This notebook)
+# MAGIC - mix the first two
+# MAGIC - ICD10 in HES APC
+# MAGIC - ICD10 in HES OP
+# MAGIC - Specialty in HES OP
+# MAGIC - Sociodemographic
+# MAGIC
+# MAGIC
+# MAGIC 1.  Include all HES APC episodes with ICD-10 M31.4 in any diagnosis position.
+# MAGIC   -  Exclude any records which cannot be traced to a valid NHS number. 
+# MAGIC 2.  Include all HES OP episodes with ICD-10 M31.4 in any diagnosis position.
+# MAGIC   - Exclude any records which cannot be traced to a valid NHS number. 
+# MAGIC 3. Extract the occurence of the following ICD-10 codes in HES APC for TA patients (either in HES APC or HES OP)
+# MAGIC | Code | â€‚â€‚Type | â€‚â€‚Description| 
+# MAGIC |--|--|--|
+# MAGIC | I351â€‚|â€‚ICD-10 |â€‚Aortic (valve) insufficiency |
+# MAGIC | I652â€‚|â€‚ICD-10â€‚|â€‚â€‚â€‚â€‚Occlusion and stenosis of carotid artery |
+# MAGIC | I712â€‚| ICD-10â€‚â€‚â€‚| â€‚â€‚â€‚â€‚Thoracic aortic aneurysm, without mention of ruptureâ€‚| 
+# MAGIC | I771â€‚|â€‚ICD-10â€‚â€‚â€‚â€‚|â€‚â€‚Stricture of artery|
+# MAGIC | I776â€‚|â€‚ICD-10â€‚â€‚â€‚|â€‚â€‚â€‚Arteritis, unspecified|
+# MAGIC |M316â€‚|â€‚ICD-10â€‚â€‚â€‚|â€‚â€‚â€‚Other giant cell arteritis|
+# MAGIC |Z512â€‚|â€‚ICD-10â€‚â€‚â€‚|â€‚â€‚â€‚Other chemotherapy|
+# MAGIC |Z958â€‚|â€‚ICD-10â€‚â€‚â€‚â€‚|â€‚â€‚Presence of other cardiac and vascular implants and grafts|
+# MAGIC
+# MAGIC 4. Extract the occurence of the ICD-10 codes in HES OP for TA patients (either in HES APC or HES OP)
+# MAGIC 5. Extract the earliest attendance for rheumatology (410), renal medicine (361) or vascular surgery (107) under MAINSPEF/TRETSPEF in HES OP
+# MAGIC 6.  We will describe the cohort by
+# MAGIC   - age (EPISTART - MYDOB)
+# MAGIC   - sex (SEX)
+# MAGIC   - ethnicity (ETHNOS; the most frequent recorded ethnicity or the most recent used if two occurred equally).
+# MAGIC   - IMD mapped from either LSOA01, LSOA11, whichever is closest to the date of diagnosis. 
+# MAGIC 7. Date of death will be obtained through linkage to the Civil Registration Deaths dataset.
+# MAGIC 8. Final date and age adjustment (and exclusion based on <2 years old)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load functions
+# MAGIC
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %run /Workspace/Shared/SHDS/common/functions
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load the datasets and parameters from the previous netobook
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %run ./02_load_datasets
+
+# COMMAND ----------
+
+print(db)
+print(db_corporate)
+print(df_byod)
+print(dbc)
+print(dbc_write)
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # All TAK records from HES OP  
+# MAGIC 1.  Include all HES OP episodes with ICD-10 M31.4 in any diagnosis position.
+
+# COMMAND ----------
+
+display(df_hes_op.limit(5))
+
+# COMMAND ----------
+
+df_hes_op_m314 = df_hes_op.filter((f.col("DIAG_4_CONCAT").contains("M314")) | \
+    (f.col("DIAG_4_CONCAT").contains("M31.4")))
+
+
+# COMMAND ----------
+
+display(df_hes_op_m314.limit(5))
+
+# COMMAND ----------
+
+# CONSORT 1
+count_var(df_hes_op_m314, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Validity of NHS NUMBERS
+# MAGIC
+# MAGIC  Exclude patients with 
+# MAGIC  - An invalid NHSNOIND in HES APC OTR
+# MAGIC  - One-time-use ID
+# MAGIC
+
+# COMMAND ----------
+
+df_token = spark.table('dars_nic_391419_j3w9t.token_pseudo_id_lookup')
+
+display(df_token.limit(10))
+
+# COMMAND ----------
+
+# Unique IDs?
+print(df_token.count())
+print(df_token.select(["pseudo_id"]).distinct().count())
+
+# COMMAND ----------
+
+# test
+display(df_token.groupby(['valid_nhs_number', 'mps_id', 'single_use_id']).agg(f.count("*")))
+
+# COMMAND ----------
+
+print(df_hes_op_m314.select("PERSON_ID_DEID").distinct().count())
+
+# COMMAND ----------
+
+# Make a distinct ID+NHSNO  dataframe for patients with at least one NHSNOIND=01 or 1  only
+df_nhs_no = df_hes_op_otr.filter((f.col("NHSNOIND")=="01") | (f.col("NHSNOIND")=="1") ).select(["PERSON_ID_DEID", "NHSNOIND"]).distinct()
+
+# COMMAND ----------
+
+# Join with the m314 (keep only valid NHSNOIND by inner joining)
+df_hes_op_m314_nhsnoind = df_hes_op_m314.join(df_nhs_no, on= ["PERSON_ID_DEID"], how= "inner")
+
+# COMMAND ----------
+
+print(df_hes_op_m314_nhsnoind.count())
+print(df_hes_op_m314_nhsnoind.select("PERSON_ID_DEID").distinct().count())
+
+# COMMAND ----------
+
+# Exclusion of single_use_ids
+df_hes_op_m314_no_one_time_id = df_hes_op_m314_nhsnoind.join(df_token.select(['pseudo_id', 'valid_nhs_number', 'mps_id', 'single_use_id']).withColumnRenamed('pseudo_id', "PERSON_ID_DEID"), on= ["PERSON_ID_DEID"], how= "left").filter(f.col("single_use_id")=="false")
+
+# COMMAND ----------
+
+print(df_hes_op_m314_no_one_time_id.count())
+print(df_hes_op_m314_no_one_time_id.select("PERSON_ID_DEID").distinct().count())
+
+# COMMAND ----------
+
+# test
+display(df_hes_op_m314_no_one_time_id.groupby(['valid_nhs_number', 'mps_id', 'single_use_id']).agg(f.count("*")))
+
+# COMMAND ----------
+
+df_hes_op_m314_no_one_time_id.write.mode('overwrite').saveAsTable(f'{dbc_write}.ccu075_1_hes_op_tak_temp_method_3_mm_20240725')
+
+# COMMAND ----------
+
+# MAGIC %md 
+# MAGIC # Load the table with HES OP TA with valid NHS number 
+
+# COMMAND ----------
+
+df_step_2 = spark.table(f'{dbc_write}.ccu075_1_hes_op_tak_temp_method_3_mm_20240725')
+
+# COMMAND ----------
+
+display(df_step_2.limit(10))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+# MAGIC # Find the date of birth
+# MAGIC
+# MAGIC use the  APPTAGE-APPTDATE at TAK diagnosis.
+# MAGIC If null, use the maximum of APPTAGE-APPTDATE per person across all records
+
+# COMMAND ----------
+
+# Any null ID, APPTAGE, or APPTAGE?
+print(df_step_2.filter(f.col("PERSON_ID_DEID").isNull()).count())
+print(df_step_2.filter(f.col("APPTAGE").isNull()).count())
+print(df_step_2.filter(f.col("APPTDATE").isNull()).count())
+
+# COMMAND ----------
+
+# Any invalid dates or age
+# Larger than archived_date 2024-04-25
+print(df_step_2.filter(f.col("APPTDATE")>"2024-04-25").count())
+
+# age >110
+print(df_step_2.filter(f.col("APPTAGE")>120).count())
+
+# age <0
+print(df_step_2.filter(f.col("APPTAGE")<0).count())
+
+# COMMAND ----------
+
+display(df_step_2.filter(f.col("APPTAGE")>120).select(["PERSON_ID_DEID", "APPTAGE", "APPTDATE"]))
+
+# COMMAND ----------
+
+# filter these  records
+df_step_2= df_step_2.filter(f.col("APPTAGE")<=120)
+
+# COMMAND ----------
+
+# Calculate date of birth in HES OP
+df_step_2 = df_step_2.withColumn("dob_op", f.date_add(f.col("APPTDATE"), -f.col("APPTAGE") * 365))
+
+# COMMAND ----------
+
+# Any null dob_op?
+print(df_step_2.filter(f.col("dob_op").isNull()).count())
+
+# COMMAND ----------
+
+# Any invalid dates?
+print(df_step_2.filter(f.col("dob_op")<"1900-01-01").count())
+
+# COMMAND ----------
+
+# Check for wrong dates
+person_dob= df_step_2.select(["PERSON_ID_DEID", "dob_op"]).distinct()
+
+# COMMAND ----------
+
+# any multiple birthdates? (this is expected in HES OP. We will keep the one at TA event date)
+print(person_dob.count())
+print(person_dob.select(["PERSON_ID_DEID"]).distinct().count())
+
+# COMMAND ----------
+
+# check these
+# Earliest restored dob_op: first
+w_age_dup = Window.partitionBy("PERSON_ID_DEID").orderBy(f.col("dob_op").asc())
+person_dob = person_dob.withColumn("age_rank", f.dense_rank().over(w_age_dup))
+dup_ids = person_dob.filter(f.col('age_rank')>1).select(["PERSON_ID_DEID"]).distinct()
+# Only those with duplicated date of birth
+dup_df = person_dob.join(dup_ids, on=["PERSON_ID_DEID"] ,how ="inner")
+display(dup_df)
+
+# COMMAND ----------
+
+# Also check for very old date of birth
+display(person_dob.select(["PERSON_ID_DEID","dob_op"]).distinct().orderBy(f.col("dob_op").asc()).limit(10))
+
+# COMMAND ----------
+
+# count <1900 (records)
+print(person_dob.filter(f.col("dob_op")<"1900-01-01").select(["PERSON_ID_DEID"]).distinct().count())
+
+# COMMAND ----------
+
+person_dob.filter(f.col("dob_op").isNull()).count()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Create TAK event date and keep one row
+
+# COMMAND ----------
+
+# Create m314 event date columns
+df_step_3 = df_step_2.withColumn("OP_m314_event_date", f.col("APPTDATE"))
+
+# COMMAND ----------
+
+# Add a flag to specify the first date of diagnosis of m314 per person
+w_1 = Window.partitionBy("PERSON_ID_DEID").orderBy(f.col("OP_m314_event_date").asc())
+df_step_3 = df_step_3.withColumn("m314_rank", f.row_number().over(w_1))
+
+# COMMAND ----------
+
+df_step_3 = df_step_3.filter(f.col("m314_rank")==1).drop("m314_rank")
+
+# COMMAND ----------
+
+display(df_step_3.select("dob_op", "OP_m314_event_date").limit(10))
+
+# COMMAND ----------
+
+print(df_step_3.filter(f.col("dob_op").isNull()).count())
+
+# COMMAND ----------
+
+# age at m314 (we will select the first diagnosis later)
+df_step_3 = df_step_3.withColumn("OP_age_m314", f.floor(
+    f.datediff(
+        f.col("OP_m314_event_date"), f.col("dob_op")
+    )/365.25
+))
+
+# COMMAND ----------
+
+display(df_step_3.select("dob_op", "OP_m314_event_date", "OP_age_m314").limit(10))
+
+# COMMAND ----------
+
+# original number of patients
+print(df_step_3.select("PERSON_ID_DEID").distinct().count())
+
+# COMMAND ----------
+
+# Distinct number of patients who were younger than 2 year old at the first diagnosis of m314?
+df_to_exclude = df_step_3.filter(f.col("OP_age_m314")<2).select("PERSON_ID_DEID").distinct()
+print(df_to_exclude.count())
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Add flag
+
+# COMMAND ----------
+
+# Add a flag to indicate the record is in HES OP TAK
+df_step_4 = df_step_3.withColumn("flag_hes_op_tak", f.lit(1))
+
+# COMMAND ----------
+
+print(df_step_4.count())
+print(df_step_4.select(["PERSON_ID_DEID"]).distinct().count())
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Save a temporary table
+
+# COMMAND ----------
+
+df_step_4.columns
+
+# COMMAND ----------
+
+df_step_4_sel = df_step_4.select(["PERSON_ID_DEID",   'NHSNOIND',
+ 'valid_nhs_number',
+ 'mps_id',
+ 'single_use_id',
+ 'dob_op',
+ 'OP_m314_event_date',
+ 'OP_age_m314',
+   'PROCODE3',
+ 'PROCODE5',
+ 'flag_hes_op_tak'])
+
+# COMMAND ----------
+
+rename_list= ["NHSNOIND", "valid_nhs_number", "mps_id", "single_use_id"]
+for item in rename_list:
+    df_step_4_sel = df_step_4_sel.withColumnRenamed(item, f'''{item}_hes_op''')
+df_step_4_sel= df_step_4_sel.withColumnRenamed('PROCODE3', f'''OP_m314_PROCODE3''')
+df_step_4_sel=df_step_4_sel.withColumnRenamed('PROCODE5', f'''OP_m314_PROCODE5''')
+
+# COMMAND ----------
+
+spark.sql(f'drop table {dbc_write}.ccu075_01_hes_op_tak_mm_20240725')
+
+# COMMAND ----------
+
+df_step_4_sel.write.mode('overwrite').saveAsTable(f'{dbc_write}.ccu075_01_hes_op_tak_mm_20240725')
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Check
+
+# COMMAND ----------
+
+df_step_4_final = spark.table(f'{dbc_write}.ccu075_01_hes_op_tak_mm_20240725')
+display(df_step_4_final)
+
+# COMMAND ----------
+
+print(df_step_4_final.count())
+print(df_step_4_final.select("PERSON_ID_DEID").distinct().count())
+
+# COMMAND ----------
+
+display(df_step_4_final.orderBy(f.col("OP_age_m314").asc()))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+# MAGIC Note on date of birth:
+# MAGIC - dob_op: is the curated date of birth. It is the maximum of APPTDATE-APPTAGE per person
+# MAGIC

@@ -1,0 +1,155 @@
+---
+title: "Incidence estimates for Takayasu arteritis in England by Demographic Group"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+#Load data
+setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+incidence_cohort_England <- read.csv2("ccu075_01_M314_cohort_20240925.csv")
+denominators <- read.csv("ccu075_01_denominators_i_age_group_sex_region_20241014.csv")
+```
+
+### Incidence by region
+
+```{r denominators}
+denominators_grouped <- denominators %>%
+  group_by(Code, sex, age_group) %>%
+  summarise(population = sum(as.numeric(total_population))) 
+#sum(denominators_grouped$population) - looks good
+
+# Set parameters for analyses
+CI_level <- 0.95
+rate_multiplier <- 1000000
+```
+
+### Incident cohort: rate ratio by sex
+
+```{r ratios}
+fine_demographics <- incidence_cohort_England %>%
+  group_by(region_code, sex, age_group) %>%
+  summarise(cases = n()) %>%
+  ungroup() %>%
+  rename(Code = region_code)
+  
+merged <- full_join(fine_demographics, denominators_grouped, by=c("Code", "sex", "age_group")) %>%
+  mutate(sex = as.factor(sex), 
+         Code = as.factor(Code),
+         age_group = as.factor(age_group),
+         cases = ifelse(is.na(cases), 0, cases))
+
+#sum(merged$cases) - OK
+#sum(merged$population) - OK
+
+crude_inc_rates_overall <- merged %>%
+  summarise(Group = "Overall", 
+            Cases_to_publish = ifelse(sum(cases)>9, 5*round(sum(cases)/5,0), 0),
+            Cases_for_calculations = ifelse(sum(cases)>50, sum(cases), #calculates using real counts where n>50
+                                ifelse(sum(cases)>9, 5*round(sum(cases)/5,0), #calculates using counts to nearest 5 where n>9/<50
+                                       0)), #Suppresses percentage where count is less than 10
+            Percentage_to_publish = ifelse(sum(cases)>50, round(100*(sum(cases)/length(incidence_cohort_England[,1])),1), #calculates percentage using real counts where n>50
+                                ifelse(sum(cases)>9, round(100*(5*round(sum(cases)/5,0)/length(incidence_cohort_England[,1])),1), #calculates percentage using counts to nearest 5 where n>9/<50
+                                       paste0("<", round(100*(10/length(incidence_cohort_England[,1]))),1))), #Suppresses percentage where count is less than 10
+            Population=sum(population),
+            Crude_incidence = Cases_for_calculations/sum(population)*rate_multiplier,
+            Lower_limit = poisson.test(Cases_for_calculations,conf.level = CI_level)$conf.int[1]/sum(population)*rate_multiplier,
+            Upper_limit = poisson.test(Cases_for_calculations,conf.level = CI_level)$conf.int[2]/sum(population)*rate_multiplier)
+
+crude_inc_rates_by_sex <- merged %>%
+  group_by(sex) %>%
+  summarise(Cases_to_publish = ifelse(sum(cases)>9, 5*round(sum(cases)/5,0), 0),
+            Cases_for_calculations = ifelse(sum(cases)>50, sum(cases), #calculates using real counts where n>50
+                                ifelse(sum(cases)>9, 5*round(sum(cases)/5,0), #calculates using counts to nearest 5 where n>9/<50
+                                       0)), #Suppresses percentage where count is less than 10
+            Percentage_to_publish = ifelse(sum(cases)>50, round(100*(sum(cases)/length(incidence_cohort_England[,1])),1), #calculates percentage using real counts where n>50
+                                ifelse(sum(cases)>9, round(100*(5*round(sum(cases)/5,0)/length(incidence_cohort_England[,1])),1), #calculates percentage using counts to nearest 5 where n>9/<50
+                                       paste0("<", round(100*(10/length(incidence_cohort_England[,1]))),1))), #Suppresses percentage where count is less than 10
+            Population=sum(population),
+            Crude_incidence = Cases_for_calculations/sum(population)*rate_multiplier,
+            Lower_limit = poisson.test(Cases_for_calculations,conf.level = CI_level)$conf.int[1]/sum(population)*rate_multiplier,
+            Upper_limit = poisson.test(Cases_for_calculations,conf.level = CI_level)$conf.int[2]/sum(population)*rate_multiplier) %>%
+  rename(Group = sex)
+
+crude_inc_rates_by_age <- merged %>%
+  group_by(age_group) %>%
+  summarise(Cases_to_publish = ifelse(sum(cases)>9, 5*round(sum(cases)/5,0), 0),
+            Cases_for_calculations = ifelse(sum(cases)>50, sum(cases), #calculates using real counts where n>50
+                                ifelse(sum(cases)>9, 5*round(sum(cases)/5,0), #calculates using counts to nearest 5 where n>9/<50
+                                       0)), #Suppresses percentage where count is less than 10
+            Percentage_to_publish = ifelse(sum(cases)>50, round(100*(sum(cases)/length(incidence_cohort_England[,1])),1), #calculates percentage using real counts where n>50
+                                ifelse(sum(cases)>9, round(100*(5*round(sum(cases)/5,0)/length(incidence_cohort_England[,1])),1), #calculates percentage using counts to nearest 5 where n>9/<50
+                                       paste0("<", round(100*(10/length(incidence_cohort_England[,1]))),1))), #Suppresses percentage where count is less than 10
+            Population=sum(population),
+            Crude_incidence = Cases_for_calculations/sum(population)*rate_multiplier,
+            Lower_limit = poisson.test(Cases_for_calculations,conf.level = CI_level)$conf.int[1]/sum(population)*rate_multiplier,
+            Upper_limit = poisson.test(Cases_for_calculations,conf.level = CI_level)$conf.int[2]/sum(population)*rate_multiplier) %>%
+  rename(Group = age_group)
+
+crude_inc_rates_by_region <- merged %>%
+  group_by(Code) %>%
+  summarise(Cases_to_publish = ifelse(sum(cases)>9, 5*round(sum(cases)/5,0), 0),
+            Cases_for_calculations = ifelse(sum(cases)>50, sum(cases), #calculates using real counts where n>50
+                                ifelse(sum(cases)>9, 5*round(sum(cases)/5,0), #calculates using counts to nearest 5 where n>9/<50
+                                       0)), #Suppresses percentage where count is less than 10
+            Percentage_to_publish = ifelse(sum(cases)>50, round(100*(sum(cases)/length(incidence_cohort_England[,1])),1), #calculates percentage using real counts where n>50
+                                ifelse(sum(cases)>9, round(100*(5*round(sum(cases)/5,0)/length(incidence_cohort_England[,1])),1), #calculates percentage using counts to nearest 5 where n>9/<50
+                                       paste0("<", round(100*(10/length(incidence_cohort_England[,1]))),1))), #Suppresses percentage where count is less than 10
+            Population=sum(population),
+            Crude_incidence = Cases_for_calculations/sum(population)*rate_multiplier,
+            Lower_limit = poisson.test(Cases_for_calculations,conf.level = CI_level)$conf.int[1]/sum(population)*rate_multiplier,
+            Upper_limit = poisson.test(Cases_for_calculations,conf.level = CI_level)$conf.int[2]/sum(population)*rate_multiplier) %>%
+  rename(Group = Code)
+
+#Combine and export
+crude_inc_rates <- rbind(crude_inc_rates_overall, crude_inc_rates_by_sex, crude_inc_rates_by_age, crude_inc_rates_by_region) %>%
+  select(Group, Cases_to_publish, Percentage_to_publish, Population, Crude_incidence, Lower_limit, Upper_limit)
+
+#Print table
+crude_inc_rates %>%
+  kable(booktabs=TRUE, align="l", col.names = c("", 
+                       "Number of incident cases", 
+                       "Percentage of total", 
+                       "Population",
+                       "Crude incidence*", 
+                       "95% CI lower bound",
+                       "95% CI upper bound"))
+
+#write.csv2(crude_inc_rates, "ccu075_01_M314_inc_rates_per_m_20241016.csv")
+
+# Contextual information
+# Crude incidence of Takayasu arteritis by demographic group
+# 
+# Column 1: Group (overall, by sex, by age group, and by Government Office Region code)
+# Column 2: Number of cases of Takayasu arteritis (M31.4) rounded to the nearest 5, with no values less than 10
+# Column 3: Percentage of total cases calculated using raw counts when >50, counts rounded to nearest 5 when >9 AND <50, and suppressed when <9
+# Column 4: Regional population count based on publicly available data (Office of National Statistics)
+# Column 5*: Crude incidence rate derived from the unrounded counts used to produce column 3/Population in column 4*1,000,000.
+# Column 6*: Poisson 95% confidence interval lower bound
+# Column 7*: Poisson 95% confidence interval upper bound
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

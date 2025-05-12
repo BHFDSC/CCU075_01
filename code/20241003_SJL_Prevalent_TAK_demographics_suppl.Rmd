@@ -1,0 +1,186 @@
+---
+title: "Prevalence estimates for Takayasu arteritis in England by demographic group"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("odbc", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("DBI", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+#load data
+library(odbc)
+library(DBI)
+con <- DBI::dbConnect(odbc:::odbc(), "databricks")
+cohort = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_df_final_20240822_updated') # from 07_mix_step_2_of_3 (core table of cohort)
+lsoas_pre_index = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_lsoa_pre_index_date_final_updated') # from 18_LSOA01_impute_updated
+lsoa_2001_2011_long = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.hds_cur_lsoa_imd_lookup_long') # Lookup table for LSOA to IMDs
+lsoa_2011_regions = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.hds_cur_lsoa_region_lookup') # Lookup table for LSOA to region
+ethnicities = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_df_eth_grouped_final_20240918_updated') # Lookup table for LSOA to region
+DBI::dbDisconnect(con)
+
+#simplify ethnicities for linkage
+ethnicities2 <- ethnicities %>%
+  select(PERSON_ID_DEID, Eth_grouped)
+
+#add ethnicities to cohort
+cohort_with_ethnicities <- left_join(cohort, ethnicities2, by=c("PERSON_ID_DEID"))
+#unique(cohort_with_ethnicities$Eth_grouped)
+
+#Remove individuals less than 2 years at adjusted diagnosis date
+cohort_over_2 <- cohort_with_ethnicities %>%
+  mutate(sex = ifelse(SEX == 1, "Male", "Female")) %>%
+  mutate(age_group = case_when(
+    final_age <= 15 ~ "0-15",
+    final_age > 15 & final_age <= 39 ~ "16-39",
+    final_age > 39 & final_age <= 54 ~ "40-54",
+    final_age > 54 & final_age <= 69 ~ "55-69",
+    final_age > 69 & final_age <= 84 ~ "70-84",
+    final_age > 84 ~ "85-90"
+    ),
+  age_group = factor(age_group, 
+                     level=c("0-15", "16-39", "40-54", "55-69", "70-84", "85-90")
+                     )
+  ) %>%
+  filter(as.numeric(final_age) >= 2) # expected number less than full cohort
+#summary(cohort_over_2$final_age)
+#unique(cohort_over_2$age_group)
+
+lsoas_pre_index <- lsoas_pre_index %>%
+  select(PERSON_ID_DEID, LSOA11_curated_pre_index_date, info_LSOA11_pre_index_date)
+
+#merge with LSOA11 at index date and remove non English residents
+cohort_over_2_with_prev_lsoas <- left_join(cohort_over_2, lsoas_pre_index, by=c("PERSON_ID_DEID")) %>%
+  filter(grepl("E", LSOA11_curated_pre_index_date, fixed=TRUE)) 
+
+#unique(cohort_over_2_with_prev_lsoas$info_LSOA11_pre_index_date)
+
+#restrict to just most recent
+imd_mapping <- lsoa_2001_2011_long %>%
+  filter(IMD_YEAR == 2019) %>%
+  select(LSOA, QUINTILE)
+#unique(imd_mapping$QUINTILE)
+
+cohort_over_2_with_prev_imds <- left_join(cohort_over_2_with_prev_lsoas, imd_mapping, by=c("LSOA11_curated_pre_index_date" = "LSOA")) 
+#unique(cohort_over_2_with_prev_imds$QUINTILE) # no NA values
+
+region_mapping <- lsoa_2011_regions %>%
+  select(lsoa_code, region_code, region_name)
+
+cohort_over_2_with_prev_regions <- left_join(cohort_over_2_with_prev_imds, region_mapping, by=c("LSOA11_curated_pre_index_date" = "lsoa_code"))
+#unique(cohort_over_2_with_prev_regions$region_name)
+
+prevalence_cohort_England <- cohort_over_2_with_prev_regions %>%
+  filter(REG_DATE_OF_DEATH > "2022-07-01" | is.na(REG_DATE_OF_DEATH)) %>%
+  filter(final_diag_date <= "2022-07-01")
+#summary(prevalence_cohort_England$final_diag_date) - all before 1st JUly 2022
+#summary(as.Date(prevalence_cohort_England$REG_DATE_OF_DEATH)) - all after 1st July 2022 and NAs
+
+#Also saving the cleaned table to the project area
+#setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+#write.csv2(prevalence_cohort_England, "ccu075_01_M314_p_cohort_20241003.csv")
+```
+
+### Prevalent cohort: ethnicity and IMD
+
+```{r ethnicity_imd}
+counts_by_eth_imd <- prevalence_cohort_England %>%
+  mutate(Eth_simplified = ifelse(Eth_grouped == "White", "White",
+                                 ifelse(Eth_grouped == "Asian", "Asian", "Other/Unknown"))) %>%
+  group_by(Eth_simplified, QUINTILE) %>%
+  summarise(Cases = ifelse(n()>9, 5*round(n()/5,0), 0)) #Suppresses percentage where count is less than 10
+
+counts_by_eth_imd %>% kable(booktabs=TRUE, align="l", col.names = c("Ethnicity", "IMD" ,
+                       "Number of prevalent cases"))
+
+# write.csv2(counts_by_eth_imd, "ccu075_01_M314_p_ethnicity_imd_20241003.csv")
+
+# Contextual information
+# Ethnicity and Index of Multiple Deprivation of the prevalent cases of Takayasu arteritis between HES years 2006/7 to 2022/23
+ 
+# Column 1: Ethnicity
+# COlumn 2: Index of Multiple Deprivation based on Lower Super Output Area at diagnosis
+# Column 3: Number of cases of Takayasu arteritis (M31.4) rounded to the nearest 5, with no values less than 10
+```
+
+### Prevalent cohort: ethnicity and region
+
+```{r ethnicity_region}
+counts_by_eth_region <- prevalence_cohort_England %>%
+  mutate(Eth_simplified = ifelse(Eth_grouped == "White", "White", "Other/Unknown")) %>%
+  group_by(Eth_simplified, region_name) %>%
+  summarise(Cases = ifelse(n()>9, 5*round(n()/5,0), 0)) #Suppresses percentage where count is less than 10
+
+counts_by_eth_region %>% kable(booktabs=TRUE, align="l", col.names = c("Ethnicity", "GOR" ,
+                       "Number of prevalent cases"))
+
+#write.csv2(counts_by_eth_region, "ccu075_01_M314_p_ethnicity_region_20241003.csv")
+
+# Contextual information
+# Ethnicity and Government Office Region of the prevalent cases of Takayasu arteritis between HES years 2006/7 to 2022/23
+ 
+# Column 1: Ethnicity
+# COlumn 2: Region based on Lower Super Output Area at diagnosis
+# Column 3: Number of cases of Takayasu arteritis (M31.4) rounded to the nearest 5, with no values less than 10
+
+counts_by_eth_london_v_else <- prevalence_cohort_England %>%
+  mutate(region_simplified = ifelse(region_name == "London", "London", "Other/Unknown")) %>%
+  group_by(Eth_grouped, region_simplified) %>%
+  summarise(Cases = ifelse(n()>9, 5*round(n()/5,0), 0)) #Suppresses percentage where count is less than 10
+
+counts_by_eth_london_v_else %>% kable(booktabs=TRUE, align="l", col.names = c("Ethnicity", "GOR" ,
+                       "Number of prevalent cases"))
+
+#write.csv2(counts_by_eth_london_v_else, "ccu075_01_M314_p_ethnicity_london_v_else_20241003.csv")
+
+# Contextual information
+# Ethnicity of the prevalent cases of Takayasu arteritis between HES years 2006/7 to 2022/23: London versus other Government Office Regions
+ 
+# Column 1: Ethnicity
+# COlumn 2: Region based on Lower Super Output Area at diagnosis
+# Column 3: Number of cases of Takayasu arteritis (M31.4) rounded to the nearest 5, with no values less than 10
+```
+
+### Prevalent cohort: region and IMD
+
+```{r region_imd}
+counts_by_region_imd <- prevalence_cohort_England %>%
+  group_by(region_name, QUINTILE) %>%
+  summarise(Cases = ifelse(n()>9, 5*round(n()/5,0), 0)) #Suppresses percentage where count is less than 10
+
+counts_by_region_imd %>% kable(booktabs=TRUE, align="l", col.names = c("GOR" , "IMD",
+                       "Number of prevalent cases"))
+
+#write.csv2(counts_by_region_imd, "ccu075_01_M314_p_region_imd_20241003.csv")
+
+# Contextual information
+# Government Office Region and Index of Multiple Deprivation of the prevalent cases of Takayasu arteritis between HES years 2006/7 to 2022/23
+ 
+# Column 1: Government Office Region based on Lower Super Output Area at diagnosis
+# COlumn 2: IMD based on Lower Super Output Area at diagnosis
+# Column 3: Number of cases of Takayasu arteritis (M31.4) rounded to the nearest 5, with no values less than 10
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

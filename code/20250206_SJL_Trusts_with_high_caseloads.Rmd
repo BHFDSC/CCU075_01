@@ -1,0 +1,92 @@
+---
+title: "Incidence estimates for Takayasu arteritis in England"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+
+# Get cohort data
+# Get data
+prevalence_cohort_England <- read.csv2("ccu075_01_M314_p_cohort_20241007.csv")
+
+cases_by_trust <- prevalence_cohort_England %>%
+  select(PERSON_ID_DEID, flag_hes_apc_tak, flag_hes_op_tak, APC_m314_PROCODE3, OP_m314_PROCODE3)
+```
+
+### Coding practise by trust pre and post COVID-19 
+
+```{r trust}
+#overall
+apc_trusts <- cases_by_trust %>%
+  filter(flag_hes_apc_tak == 1) %>%
+  select(PERSON_ID_DEID, APC_m314_PROCODE3) %>%
+  rename(trust = APC_m314_PROCODE3)
+
+op_trusts <- cases_by_trust %>%
+  filter(flag_hes_op_tak == 1)  %>%
+  select(PERSON_ID_DEID, OP_m314_PROCODE3)  %>%
+  rename(trust = OP_m314_PROCODE3)
+
+merged_trusts <- rbind(apc_trusts, op_trusts) %>%
+  distinct(PERSON_ID_DEID, trust, .keep_all = TRUE)
+
+#length(unique(merged_trusts$PERSON_ID_DEID)) - still good
+
+caseloads <- merged_trusts %>%
+  group_by(trust) %>%
+  summarise(cases = n()) %>%
+  arrange(desc(cases))
+
+# sum(caseloads$cases) - still good
+
+caseloads_20_or_over <- caseloads %>%
+  filter(cases > 19)
+
+caseloads_80_or_over <- caseloads_20_or_over %>%
+  filter(cases > 79)
+
+provider_summary <- data.frame(rbind(c("Number of unique providers with 20 or more cases", length(caseloads_20_or_over$trust)),
+                                     c("Number of unique providers with 80 or more cases", length(caseloads_80_or_over$trust))))
+
+colnames(provider_summary) <- c("Description", "N")
+```
+
+
+### Export
+
+```{r export}
+#write.csv(provider_summary, "ccu075_01_caseload_summary_20250206.csv")
+
+# Contextual information
+# Number of prevalent cohorts of Takayasu arteritis (M31.4) over a certain size in England
+# 
+# Column 1: Description
+# Column 2: Number of providers (please note these are not themselves case counts and so do not need to be rounded)
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

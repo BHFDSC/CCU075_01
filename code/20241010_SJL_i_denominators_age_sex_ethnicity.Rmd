@@ -1,0 +1,172 @@
+---
+title: "Grouping of ONS population data by age, sex, and ethnicity"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("odbc", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("DBI", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+# Get denominator data
+library(odbc)
+library(DBI)
+con <- DBI::dbConnect(odbc:::odbc(), "databricks")
+denominators_2021 = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.hds_population_estimates_2021_ethnicity_age_sex')
+denominators_2011 = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.hds_population_estimates_2011_ethnicity_age_sex')
+denominators_per_year = dbGetQuery(con, 'Select * from dsa_391419_j3w9t_collab.ccu075_01_region_age_sex_2006_2022') # ONS region data 2006-2022 ungrouped
+DBI::dbDisconnect(con)
+
+#reshape denominator data and save new table
+yearly_totals <- denominators_per_year %>% 
+  group_by(Year) %>%
+  summarise(n = sum(as.numeric(gsub(",", "", All_Persons)), na.rm=TRUE),
+            .groups = 'drop') %>%
+  ungroup()
+
+#sum(as.numeric(denominators_per_year$All_Persons)) checked is equal to sum(yearly_totals$n)
+#save for future use
+#write.csv2(yearly_totals, "ccu075_01_yearly_population_denominators_20241010.csv")
+
+#first sort 2021 breakdown
+pyears_2016_2022 <- yearly_totals %>%
+  filter(Year >= 2016) 
+
+# denominator_check <- denominators_2021 %>%
+#      mutate(n_numeric = as.numeric(n)) %>%
+#      filter(is.na(n_numeric))
+
+edenominators21 <- denominators_2021 %>%
+  mutate(n_numeric = ifelse(n == "c", 0, as.numeric(n))) %>%
+  mutate(ethnicity_broad = case_when(
+    str_sub(ethnicity,1,5) == "Asian" ~ "Asian",
+    str_sub(ethnicity,1,5) == "Black" ~ "Black",
+    str_sub(ethnicity,1,5) == "Mixed" ~ "Mixed",
+    str_sub(ethnicity,1,5) == "White" ~ "White",
+    str_sub(ethnicity,1,5) == "Other" ~ "Other"
+  ),
+  ethnicity_broad = factor(ethnicity_broad, 
+                     level=c("Asian", "Black", "Mixed", "White", "Other")
+                     )
+  )
+
+# denominator_check <- edenominators21 %>%
+#       filter(n == "c")
+# head(denominator_check)
+# typeof(edenominators21$n_numeric)
+
+totals_21 <- edenominators21 %>% 
+  group_by(ethnicity_broad, sex, age) %>%
+  summarise(sum_n = sum(n_numeric, na.rm=TRUE),
+            .groups = 'drop') %>%
+  ungroup() %>%
+  mutate(age_numeric = as.numeric(ifelse(age == "100 or over", 100, age))) %>%
+  mutate(age_group = case_when(
+    age_numeric <= 15 ~ "0-15",
+    age_numeric > 15 & age_numeric <= 39 ~ "16-39",
+    age_numeric > 39 & age_numeric <= 54 ~ "40-54",
+    age_numeric > 54 & age_numeric <= 69 ~ "55-69",
+    age_numeric > 69 & age_numeric <= 84 ~ "70-84",
+    age_numeric > 84 ~ "85-90"
+    ),
+  age_group = factor(age_group, 
+                     level=c("0-15", "16-39", "40-54", "55-69", "70-84", "85-90")
+                     )
+  ) %>% 
+  group_by(ethnicity_broad, sex, age_group) %>%
+  summarise(total_n = sum(sum_n, na.rm=TRUE),
+            .groups = 'drop') %>%
+  ungroup() %>%
+  mutate(proportions = total_n/sum(total_n)) %>%
+  mutate(denominators = round(proportions*sum(pyears_2016_2022$n))) # applied the yearly totals here
+
+## Checked that below == TRUE
+#sum(totals_21$total_n) == sum(edenominators21$n_numeric)
+#sum(totals_21$proportions) == 1
+#sum(totals_21$denominators) == sum(pyears_2016_2022$n) - this was true before adding the rounding step to the last line of the above
+
+#then sort 2011 breakdown, which had a different layout so needed a different approach
+
+pyears_2006_2015 <- yearly_totals %>%
+  filter(Year <= 2015)
+
+edenominators11 <- denominators_2011 %>%
+  filter(str_sub(ethnicity,-5,-1) == "Total" & age_band != "All") %>%
+  mutate(ethnicity_broad = case_when(
+    str_sub(ethnicity,1,5) == "Asian" ~ "Asian",
+    str_sub(ethnicity,1,5) == "Black" ~ "Black",
+    str_sub(ethnicity,1,5) == "Mixed" ~ "Mixed",
+    str_sub(ethnicity,1,5) == "White" ~ "White",
+    str_sub(ethnicity,1,5) == "Other" ~ "Other"
+  ),
+  ethnicity_broad = factor(ethnicity_broad, 
+                     level=c("Asian", "Black", "Mixed", "White", "Other")
+                     )
+  ) %>%
+  mutate(age_list = str_split(age_band, "-+", simplify = TRUE)) %>%
+  mutate(lower_age = ifelse(is.na(as.numeric(age_list[,1])), 85, as.numeric(age_list[,1]))) %>%
+  mutate(age_group = case_when(
+    lower_age <= 15 ~ "0-15",
+    lower_age > 15 & lower_age <= 39 ~ "16-39",
+    lower_age > 39 & lower_age <= 54 ~ "40-54",
+    lower_age > 54 & lower_age <= 69 ~ "55-69",
+    lower_age > 69 & lower_age <= 84 ~ "70-84",
+    lower_age > 84 ~ "85-90"
+    ),
+  age_group = factor(age_group, 
+                     level=c("0-15", "16-39", "40-54", "55-69", "70-84", "85-90")
+                     )
+  ) 
+
+totals_11 <- edenominators11 %>% 
+  group_by(ethnicity_broad, sex, age_group) %>%
+  summarise(total_n = sum(n, na.rm=TRUE),
+            .groups = 'drop') %>%
+  ungroup() %>%
+  mutate(proportions = total_n/sum(total_n)) %>%
+  mutate(denominators = round(proportions*sum(pyears_2006_2015$n)))
+    
+## Checked that below == TRUE
+#sum(totals_11$total_n) == sum(edenominators11$n)
+#sum(totals_11$proportions) == 1
+#sum(totals_11$denominators) == sum(pyears_2006_2015$n) - this was true before adding the rounding step to the last line of the above
+
+## Combine 2011 and 2021 counts
+merged <- full_join(totals_11, totals_21, by=c("ethnicity_broad", "sex", "age_group")) %>%
+  mutate(combined_denominator = denominators.x + denominators.y) %>%
+  select(ethnicity_broad, sex, age_group, combined_denominator)
+
+# sum(merged$combined_denominator) looks good
+
+merged %>% 
+  spread(key=age_group, value=combined_denominator) %>%
+  kable(booktabs=TRUE, align="l")
+
+# save for future
+# setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+# write.csv(merged, "ccu075_01_denominators_i_age_group_sex_ethnicity_20241010.csv")
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

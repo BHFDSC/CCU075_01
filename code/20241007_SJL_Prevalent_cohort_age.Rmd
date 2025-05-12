@@ -1,0 +1,106 @@
+---
+title: "Prevalence estimates for Takayasu arteritis in England by age"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("knitr", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("kableExtra", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("odbc", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+#install.packages("DBI", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+#load data
+setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+prevalence_cohort_England <- read.csv2("ccu075_01_M314_p_cohort_20241007.csv")
+denominators_2022 <- read.csv2( "ccu075_01_denominators_age_sex_region_20241003.csv")
+```
+
+# Crude prevalence by age
+
+```{r ratios}
+fine_demographics <- prevalence_cohort_England %>%
+  select(-age_group) %>%
+  group_by(region_code, sex, age_group_index) %>%
+  summarise(cases = n()) %>%
+  ungroup() %>%
+  rename(Code = region_code,
+         age_group = age_group_index)
+
+denominators_2022_grouped <- denominators_2022 %>%
+  group_by(Code, Sex, age_group) %>%
+  summarise(population = sum(as.numeric(Population))) %>%
+  rename(sex = Sex)
+  
+merged <- full_join(fine_demographics, denominators_2022_grouped, by=c("Code", "sex", "age_group")) %>%
+  mutate(age_group = as.factor(age_group),
+         cases = ifelse(is.na(cases), 0, cases))
+
+# Set parameters for analyses
+CI_level <- 0.95
+rate_multiplier <- 1000000
+
+crude_prev_rates_by_age <- merged %>%
+  group_by(age_group) %>%
+  summarise(Cases_to_publish = ifelse(sum(cases)>9, 5*round(sum(cases)/5,0), 0),
+            Cases_for_calculations = ifelse(sum(cases)>50, sum(cases), #calculates using real counts where n>50
+                                ifelse(sum(cases)>9, 5*round(sum(cases)/5,0), #calculates using counts to nearest 5 where n>9/<50
+                                       0)), #Suppresses percentage where count is less than 10
+            Percentage_to_publish = ifelse(sum(cases)>50, round(100*(sum(cases)/length(prevalence_cohort_England[,1])),1), #calculates percentage using real counts where n>50
+                                ifelse(sum(cases)>9, round(100*(5*round(sum(cases)/5,0)/length(prevalence_cohort_England[,1])),1), #calculates percentage using counts to nearest 5 where n>9/<50
+                                       paste0("<", round(100*(10/length(prevalence_cohort_England[,1]))),1))), #Suppresses percentage where count is less than 10
+            Population=sum(population),
+            Crude_prevalence = Cases_for_calculations/sum(population)*rate_multiplier,
+            Lower_limit = poisson.test(Cases_for_calculations,conf.level = CI_level)$conf.int[1]/sum(population)*rate_multiplier,
+            Upper_limit = poisson.test(Cases_for_calculations,conf.level = CI_level)$conf.int[2]/sum(population)*rate_multiplier) %>%
+  rename(Group = age_group)
+
+#Combine and export
+crude_prev_rates <- crude_prev_rates_by_age %>%
+  select(Group, Cases_to_publish, Percentage_to_publish, Population, Crude_prevalence, Lower_limit, Upper_limit)
+
+#Print table
+crude_prev_rates %>%
+  kable(booktabs=TRUE, align="l", col.names = c("", 
+                       "Number of prevalent cases", 
+                       "Percentage of total", 
+                       "Population",
+                       "Crude prevalence*", 
+                       "95% CI lower bound",
+                       "95% CI upper bound"))
+
+#write.csv2(crude_prev_rates, "ccu075_01_M314_prev_rates_per_m_20241007.csv")
+
+# Blurb for output checking
+# Crude prevalence of Takayasu arteritis by age group: 1st July 2022
+# 
+# Column 1: Age group
+# Column 2: Number of cases of Takayasu arteritis (M31.4) rounded to the nearest 5, with no values less than 10
+# Column 3: Percentage of total cases calculated using raw counts when >50, counts rounded to nearest 5 when >9 AND <50, and suppressed when <9
+# Column 4: Regional population count based on publicly available data (Office of National Statistics)
+# Column 5*: Crude prevalence rate derived from the unrounded counts used to produce column 3/Population in column 4*1,000,000.
+# Column 6*: Poisson 95% confidence interval lower bound
+# Column 7*: Poisson 95% confidence interval upper bound
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

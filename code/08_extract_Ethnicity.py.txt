@@ -1,0 +1,323 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC
+# MAGIC
+# MAGIC # CCU075_01: Ethnicity
+# MAGIC
+# MAGIC Description: The notebook find ethnicity data for the TAK cohort using HES APC, HES OP, or the patient characteristics table.
+# MAGIC
+# MAGIC Authors and Reviewers: Mehrdad Mizani, Stephanie Lax
+# MAGIC
+# MAGIC Strategy:
+# MAGIC - From HES APC first: the most frequent recorded ethnicity or the most recent used if two occurred equally
+# MAGIC - For those not in HES APC: follow the same method and extract from HES OP
+# MAGIC - For any remaining: use the patient characteristcs table to extract from HES A&E and GDPPR
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load functions
+# MAGIC
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %run /Workspace/Shared/SHDS/common/functions
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load the datasets and parameters from the previous netobook
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %run ./02_load_datasets
+
+# COMMAND ----------
+
+print(db)
+print(db_corporate)
+print(df_byod)
+print(dbc)
+print(dbc_write)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load  the mix table (step 2 of 3)
+
+# COMMAND ----------
+
+df_mix = spark.table(f'{dbc_write}.ccu075_01_joined_table_2_of_3_20240725_updated')
+
+# COMMAND ----------
+
+display(df_mix.limit(10))
+
+# COMMAND ----------
+
+count_var(df_mix, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+display(df_mix.groupBy(["flag_hes_apc_tak","flag_hes_op_tak"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+# MAGIC Split into records in HES APC and in HES OP only
+# MAGIC
+
+# COMMAND ----------
+
+df_mix_apc = df_mix.filter(f.col("flag_hes_apc_tak")==1)
+df_mix_op = df_mix.filter(f.col("flag_hes_apc_tak")==0)
+
+# COMMAND ----------
+
+print(df_mix_apc.count())
+print(df_mix_op.count())
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Ethnicity from HES AP
+
+# COMMAND ----------
+
+# Extract IDs to join with HES APC
+ids_hes_apc = df_mix_apc.select("PERSON_ID_DEID")
+
+# COMMAND ----------
+
+# Left join with hes for ethnicity
+df_eth_apc_1 = ids_hes_apc.join(df_hes_apc.select(["PERSON_ID_DEID", "ETHNOS", "EPISTART"]), on=["PERSON_ID_DEID"], how="left" )
+
+# COMMAND ----------
+
+# Ethnic codes
+display(df_eth_apc_1.groupby("ETHNOS").agg(f.count("*")))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Ethnic codes in data dictionary
+# MAGIC
+# MAGIC - A:British (White) (White)
+# MAGIC - B:Irish (White) (White)
+# MAGIC - C:Any other White background (White)
+# MAGIC - D:White and Black Caribbean (Mixed) (Mixed)
+# MAGIC - E:White and Black African (Mixed) (Mixed)
+# MAGIC - F:White and Asian (Mixed)  (Mixed)
+# MAGIC - G:Any other Mixed background (Mixed)
+# MAGIC - H:Indian (Asian or Asian British) (Asian)
+# MAGIC - J:Pakistani (Asian or Asian British) (Asian)
+# MAGIC - K:Bangladeshi (Asian or Asian British) (Asian)
+# MAGIC - L:Any other Asian background (Asian)
+# MAGIC - M:Caribbean (Black or Black British) (Black)
+# MAGIC - N:African (Black or Black British) (Black)
+# MAGIC - P:Any other Black background (Black)
+# MAGIC - R:Chinese (other ethnic group) (Asian)
+# MAGIC - S:Any other ethnic group (Other)
+# MAGIC - Z:Not stated (Null)
+# MAGIC - X:Not known (prior to 2013) (Null)
+# MAGIC - 99:Not known (2013 onwards) (Null)
+# MAGIC - 0: White (White)
+# MAGIC - 1:Black - Caribbean (Black)
+# MAGIC - 2:Black - African (Black)
+# MAGIC - 3:Black - Other (Black)
+# MAGIC - 4:Indian (Asian)
+# MAGIC - 5:Pakistani (Asian)
+# MAGIC - 6:Bangladeshi (Asian)
+# MAGIC - 7:Chinese (Asian)
+# MAGIC - 8:Any other ethnic group (Other)
+# MAGIC - 9:Not given (Null)
+# MAGIC - 99:Not known (Null)
+# MAGIC
+# MAGIC
+# MAGIC
+# MAGIC - The data has category 0.  (https://v2.datadictionary.nhs.uk/data_dictionary/classes/e/ethnic_group_de.asp@shownav=0.html) 
+
+# COMMAND ----------
+
+# Test of duplicated epistart
+w_test = Window.partitionBy(["PERSON_ID_DEID", "EPISTART"]).orderBy(f.col("EPISTART"))
+df_tst = df_eth_apc_1.withColumn("rank", f.row_number().over(w_test))
+display(df_tst.filter(f.col('rank')>1))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Strategy for ethnicity
+# MAGIC
+# MAGIC - Keep unique combinations of epistart and ethnos
+# MAGIC   - e.g., if ethnicity A is recorded twice on 2023-12-21, keep only one
+# MAGIC - Count each ethnicity per person
+# MAGIC - Sort by the count (descending) and epistart (ascnding)
+# MAGIC - Select the first ethnicity 
+
+# COMMAND ----------
+
+# Keep unique combination of Ethnicity and epistart 
+# The orderby does not add anything to the logic of the Window. It is just needed by the row_number()
+w_dup = Window.partitionBy(["PERSON_ID_DEID", "ETHNOS", "EPISTART"]).orderBy(f.col("EPISTART"))
+df_eth_apc_2 = df_eth_apc_1.withColumn("eth_order", f.row_number().over(w_dup))
+df_eth_apc_2 = df_eth_apc_2.filter(f.col("eth_order")==1).drop("eth_order")
+
+# COMMAND ----------
+
+# Define the window funciton for counting different ethnicities per person
+w_eth_2= Window.partitionBy(["PERSON_ID_DEID", "ETHNOS"])
+df_eth_apc_3 = df_eth_apc_2.withColumn("eth_count", f.count("ETHNOS").over(w_eth_2))
+
+# COMMAND ----------
+
+# Keep one row per person+ethnos with most recent EPISTART
+w_eth_3= Window.partitionBy(["PERSON_ID_DEID", "ETHNOS"]).orderBy(f.col("EPISTART").desc_nulls_last())
+df_eth_apc_4 = df_eth_apc_3.withColumn("eth_rank", f.row_number().over(w_eth_3))
+df_eth_apc_4 = df_eth_apc_4.filter(f.col("eth_rank")==1).drop("eth_rank")
+
+# COMMAND ----------
+
+# Order by EPISTART (descending)+count (descending)  and keep the first row
+w_eth_4 = Window.partitionBy(["PERSON_ID_DEID"]).orderBy(f.col("eth_count").desc(), f.col("EPISTART").desc_nulls_last())
+df_eth_apc_5 = df_eth_apc_4.withColumn("final_rank", f.row_number().over(w_eth_4))
+
+# COMMAND ----------
+
+# final table 
+df_eth_apc_final = df_eth_apc_5.filter(f.col("final_rank")==1).drop("eth_count").drop("final_rank").drop("EPISTART")
+
+# COMMAND ----------
+
+df_eth_apc_final.cache()
+
+# COMMAND ----------
+
+print(df_eth_apc_final.select("PERSON_ID_DEID").count())
+print(df_eth_apc_final.select("PERSON_ID_DEID").distinct().count())
+
+# COMMAND ----------
+
+# Any null ethnicities?
+df_eth_apc_final.filter(f.col("ETHNOS").isNull()).count()
+
+# COMMAND ----------
+
+# Ethnic codes
+display(df_eth_apc_final.groupby("ETHNOS").agg(f.count("*")))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC #Ethnicity from HES OP
+
+# COMMAND ----------
+
+# Extract IDs to join with HES OP
+ids_hes_op = df_mix_op.select("PERSON_ID_DEID")
+
+# COMMAND ----------
+
+ids_hes_op.count()
+
+# COMMAND ----------
+
+# Left join with hes for ethnicity
+df_eth_op_1 = ids_hes_op.join(df_hes_op.select(["PERSON_ID_DEID", "ETHNOS", "APPTDATE"]), on=["PERSON_ID_DEID"], how="left" )
+
+# COMMAND ----------
+
+# Ethnic codes
+display(df_eth_op_1.groupby("ETHNOS").agg(f.count("*")))
+
+# COMMAND ----------
+
+# Test of duplicated epistart
+w_test_op = Window.partitionBy(["PERSON_ID_DEID", "APPTDATE"]).orderBy(f.col("APPTDATE"))
+df_tst_op = df_eth_op_1.withColumn("rank", f.row_number().over(w_test_op))
+display(df_tst_op.filter(f.col('rank')>1))
+
+# COMMAND ----------
+
+# Keep unique combination of Ethnicity and APPTDATE 
+# The orderby does not add anything to the logic of the Window. It is just needed by the row_number()
+w_dup_op = Window.partitionBy(["PERSON_ID_DEID", "ETHNOS", "APPTDATE"]).orderBy(f.col("APPTDATE"))
+df_eth_op_2 = df_eth_op_1.withColumn("eth_order", f.row_number().over(w_dup_op))
+df_eth_op_2 = df_eth_op_2.filter(f.col("eth_order")==1).drop("eth_order")
+
+# COMMAND ----------
+
+# Define the window funciton for counting different ethnicities per person
+w_eth_2_op= Window.partitionBy(["PERSON_ID_DEID", "ETHNOS"])
+df_eth_op_3 = df_eth_op_2.withColumn("eth_count", f.count("ETHNOS").over(w_eth_2_op))
+
+# COMMAND ----------
+
+# Keep one row per person+ethnos with most recent APPTDATE
+w_eth_3_op= Window.partitionBy(["PERSON_ID_DEID", "APPTDATE"]).orderBy(f.col("APPTDATE").desc_nulls_last())
+df_eth_op_4 = df_eth_op_3.withColumn("eth_rank", f.row_number().over(w_eth_3_op))
+df_eth_op_4 = df_eth_op_4.filter(f.col("eth_rank")==1).drop("eth_rank")
+
+# COMMAND ----------
+
+# Order by APPTDATE (descending)+count (descending)  and keep the first row
+w_eth_4_op = Window.partitionBy(["PERSON_ID_DEID"]).orderBy(f.col("eth_count").desc(), f.col("APPTDATE").desc_nulls_last())
+df_eth_op_5 = df_eth_op_4.withColumn("final_rank", f.row_number().over(w_eth_4_op))
+
+# COMMAND ----------
+
+# final table 
+df_eth_op_final = df_eth_op_5.filter(f.col("final_rank")==1).drop("eth_count").drop("final_rank").drop("APPTDATE")
+
+# COMMAND ----------
+
+df_eth_op_final.cache()
+
+# COMMAND ----------
+
+print(df_eth_op_final.select("PERSON_ID_DEID").count())
+print(df_eth_op_final.select("PERSON_ID_DEID").distinct().count())
+
+# COMMAND ----------
+
+# Any null ethnicities?
+df_eth_op_final.filter(f.col("ETHNOS").isNull()).count()
+
+# COMMAND ----------
+
+# Ethnic codes
+display(df_eth_op_final.groupby("ETHNOS").agg(f.count("*")))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+# MAGIC # Union of HES APC and HES OP ethnicities and join with the cohort
+
+# COMMAND ----------
+
+df_eth_apc_final = df_eth_apc_final.withColumn("ethnicity_source", f.lit("HES APC"))
+df_eth_op_final = df_eth_op_final.withColumn("ethnicity_source", f.lit("HES OP"))
+
+df_eth_union = df_eth_apc_final.union(df_eth_op_final)
+
+# COMMAND ----------
+
+display(df_eth_union.groupBy("ethnicity_source").agg(f.count("*")))
+
+# COMMAND ----------
+
+print(df_eth_union.select("PERSON_ID_DEID").count())
+print(df_eth_union.select("PERSON_ID_DEID").distinct().count())
+
+# COMMAND ----------
+
+display(df_eth_union)
+
+# COMMAND ----------
+
+# Save a temporary checkpoint
+df_eth_union.write.mode('overwrite').saveAsTable(f'{dbc_write}.ccu075_01_eth_mm_20240725_updated')

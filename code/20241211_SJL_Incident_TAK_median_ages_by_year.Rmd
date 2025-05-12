@@ -1,0 +1,54 @@
+---
+title: "Incidence estimates for Takayasu arteritis in England"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#install packages at first use
+#install.packages("tidyverse", repos = "https://packages.sde.digital.nhs.uk/repository/cran-mirror/", dependencies = TRUE)
+
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+
+setwd("D:/PhotonUser/My Files/Home Folder/ccu075_01")
+incidence_cohort_England <- read.csv2("ccu075_01_M314_cohort_20240925.csv")
+```
+
+### Incident cohort
+
+```{r annual_incidence_age}
+# Get raw counts
+medians_etc <- incidence_cohort_England %>%
+  group_by(HES_YEAR) %>%
+  summarise(Cases = ifelse(n()>9, 5*round(n()/5,0), "<10"), 
+            Median = median(final_age),
+            IQR1 = quantile(final_age, 0.25),
+            IQR3 = quantile(final_age, 0.75))
+
+# write.csv(medians_etc, "ccu075_01_M314_age_by_year_20241211.csv")
+
+# Contextual information
+# Table of the median age of incident cases of Takayasu arteritis by HES year
+# 
+# Column 1: HES year of diagnosis
+# Column 2: Number of cases of Takayasu arteritis (M31.4) rounded to the nearest 5, with no values less than 10
+# Column 3: Median age at diagnosis
+# Column 4: Interquartile range lower bound for age at diagnosis
+# Column 5: Interquartile range upper bound for age at diagnosis
+```
+
+### Version
+
+```{r version, echo=FALSE}
+sessionInfo()
+```

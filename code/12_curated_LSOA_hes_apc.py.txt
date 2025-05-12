@@ -1,0 +1,697 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC
+# MAGIC # LSOA01 + LSOA11 from HES APC
+# MAGIC
+# MAGIC Description: The notebook combines LSOA01 and LSOA11 data for the TAK cohort from HES APC
+# MAGIC
+# MAGIC Authors and Reviewers: Mehrdad Mizani, Stephanie Lax
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load functions
+
+# COMMAND ----------
+
+# MAGIC %run /Workspace/Shared/SHDS/common/functions
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load the datasets and parameters from the previous notebook
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %run ./02_load_datasets
+
+# COMMAND ----------
+
+print(db)
+print(db_corporate)
+print(df_byod)
+print(dbc)
+print(dbc_write)
+
+
+# COMMAND ----------
+
+# Load cohort mix
+df_mix = spark.table(f'{dbc_write}.ccu075_01_joined_table_2_of_3_20240725_updated')
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Load  the extracted LSOA01 and LSOA11 tables
+
+# COMMAND ----------
+
+df_lsoa_11 = spark.table(f'{dbc_write}.ccu075_01_lsoa11_apc_mm_20240725_updated')
+#display(df_lsoa_11.limit(10))
+
+# COMMAND ----------
+
+df_lsoa_01 = spark.table(f'{dbc_write}.ccu075_01_lsoa01_apc_mm_20240725_updated')
+#display(df_lsoa_01.limit(10))
+
+# COMMAND ----------
+
+count_var(df_lsoa_11, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+count_var(df_lsoa_01, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+display(df_lsoa_01.groupBy("LSOA01_source").agg(f.count("*")))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+# MAGIC Assess in the following order 
+# MAGIC - Pre-TA
+# MAGIC - Pre-index date
+# MAGIC - Pre-adjusted date
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC  
+# MAGIC # 1. Pre-TA
+
+# COMMAND ----------
+
+df_lsoa_01.columns
+
+# COMMAND ----------
+
+df_1 = df_lsoa_01.select(["PERSON_ID_DEID", "LSOA01_pre_TA"]).join(df_lsoa_11.select(["PERSON_ID_DEID", "LSOA11_pre_TA"]), on= ["PERSON_ID_DEID"], how= "inner")
+
+# COMMAND ----------
+
+count_var(df_1, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+display(df_1)
+
+# COMMAND ----------
+
+# add null flags
+df_1 = df_1.withColumn("2011_is_null", f.when(f.col("LSOA11_pre_TA").isNull(), f.lit(1)).otherwise(f.lit(0)))
+df_1 = df_1.withColumn("2001_is_null", f.when(f.col("LSOA01_pre_TA").isNull(), f.lit(1)).otherwise(f.lit(0)))
+
+# COMMAND ----------
+
+display(df_1.groupBy(["2001_is_null", "2011_is_null"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# Check the records where both are null
+display(df_1.filter(f.col("2001_is_null")==1).filter(f.col("2011_is_null")==1))
+
+# COMMAND ----------
+
+# Check non English LSOAs
+display(df_1.filter((~f.col("LSOA01_pre_TA").startswith("E")) | (~f.col("LSOA11_pre_TA").startswith("E"))))
+
+# COMMAND ----------
+
+# How many identical LSOA 2001 and LSOA 2011
+df_1 = df_1.withColumn("identical_lsoa", f.when(f.col("LSOA01_pre_TA")==f.col("LSOA11_pre_TA"), f.lit(1)).otherwise(f.lit(0)))
+
+# COMMAND ----------
+
+display(df_1.groupBy(["2001_is_null", "2011_is_null","identical_lsoa" ]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Strategy for pre TA
+# MAGIC
+# MAGIC - Create cureated for LSOA01 and LSOA 2011 separately
+# MAGIC - Most LSOAs are identical
+# MAGIC - Some LSOA2001 are different from LSOA 2011
+# MAGIC - Some patients have LSOA 2001 only: Map to 2011 (for curated LSOA 2011)
+# MAGIC - A small number of patients have null pre-TA LSOA (Impute either from post-TA records or from other datasets)
+# MAGIC   - For LSOA11, use the multisource table (which has LSOA11)
+# MAGIC   - For LSOA01, impute later from APC+OP+AE pre and post baseline
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Load IMD and LSOA mapping table
+
+# COMMAND ----------
+
+df_imd = spark.table(f'''{db_corporate}.english_indices_of_dep_v02''')
+display(df_imd.limit(10))
+
+# COMMAND ----------
+
+display(df_imd.groupBy("IMD_YEAR").agg(f.count("*")))
+
+# COMMAND ----------
+
+# LSOA mapping file
+
+df_map = spark.table(f'{db_corporate}.ons_2001LSOA_2011LSOA_2011LAD')
+#display(df_map.limit(10))
+
+# COMMAND ----------
+
+display(df_map.groupBy("CHANGE_ID").agg(f.count("*")))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC - U: no change
+# MAGIC - M: Merged 
+# MAGIC - S: Split
+# MAGIC - X: irregular
+
+# COMMAND ----------
+
+# Check LSOA2001s that must be mapped to LSOA2011
+df_1_2001_only = df_1.filter(f.col("2001_is_null")==0).filter(f.col("2011_is_null")==1)
+display(df_1_2001_only)
+
+# COMMAND ----------
+
+# Join with the mapping file
+df_1_2001_only_mapped = df_1_2001_only.join(df_map.select(["LSOA01CD", "LSOA11CD", "CHANGE_ID"]), df_1_2001_only.LSOA01_pre_TA == df_map.LSOA01CD, how="left")
+display(df_1_2001_only_mapped.orderBy("CHANGE_ID"))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+# MAGIC Merged records have different LSOA11. For splitted records, keep only one records
+
+# COMMAND ----------
+
+# Keep one in random (LSOA01 ascending)
+w = Window.partitionBy(["PERSON_ID_DEID", "LSOA01CD"]).orderBy(f.col("LSOA01CD").asc())
+df_1_2001_only_mapped = df_1_2001_only_mapped.withColumn("rank", f.row_number().over(w))
+df_1_2001_only_mapped = df_1_2001_only_mapped.filter(f.col("rank")==1)
+display(df_1_2001_only_mapped.orderBy("CHANGE_ID"))
+
+# COMMAND ----------
+
+# clean table
+df_1_2001_only_final = df_1_2001_only_mapped.drop("LSOA01CD").drop("CHANGE_ID").drop("rank")
+
+#df_1_2001_only_final = df_1_2001_only_final.select(["PERSON_ID_DEID", "LSOA01_pre_TA", "LSOA11_pre_TA", "2011_is_null", "2001_is_null", "identical_lsoa"])
+#display(df_1_2001_only_final)
+
+# COMMAND ----------
+
+# All Nulls
+df_1_nulls = df_1.filter(f.col("2001_is_null")==1).filter(f.col("2011_is_null")==1)
+display(df_1_nulls)
+
+# COMMAND ----------
+
+# All lsoas11 table
+df_multisource= spark.table(f'{dbc_write}.hds_curated_assets__lsoa_multisource_2024_04_25')
+display(df_multisource.limit(10))
+
+# COMMAND ----------
+
+display(df_multisource.groupBy("data_source").agg(f.count("*")))
+
+# COMMAND ----------
+
+# Keep only hes and gdppr in ascending order: HES PAC, HES OP, HES AE, GDPPR
+df_multisource = df_multisource.filter(f.col("data_source")!= "vaccine_status")
+df_multisource = df_multisource.withColumnRenamed("person_id", "PERSON_ID_DEID")
+df_multisource = df_multisource.withColumn("record_date", f.to_date(f.col("record_date"), "yyyy-MM-dd"))
+df_multisource = df_multisource.withColumn("table_order", f.when(f.col("data_source")=="hes_apc", f.lit(1)).\
+    when(f.col("data_source")=="hes_op", f.lit(2)).\
+        when(f.col("data_source")=="hes_ae", f.lit(3)).\
+            otherwise(f.lit(4)))
+
+# COMMAND ----------
+
+# any nulls?
+print(df_multisource.filter(f.col("record_date").isNull()).count())
+print(df_multisource.filter(f.col("lsoa").isNull()).count())
+
+# COMMAND ----------
+
+df_multisource = df_multisource.filter(f.col("record_date").isNotNull()).filter(f.col("lsoa").isNotNull())
+
+# COMMAND ----------
+
+display(df_multisource.groupBy(["data_source", "table_order"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# Add TA date
+df_1_nulls = df_1_nulls.join(df_mix.select(["PERSON_ID_DEID", "APC_m314_event_date"]), on="PERSON_ID_DEID", how="left")
+display(df_1_nulls)
+
+# COMMAND ----------
+
+# JOin with multisource table  
+df_1_nulls_multisource = f.broadcast(df_1_nulls).join(df_multisource, on= ["PERSON_ID_DEID"], how= "left")
+# Keep records before the TA date
+df_1_nulls_multisource =df_1_nulls_multisource.withColumn("new_date_before_TA", f.when(f.col("record_date")<=f.col("APC_m314_event_date"), f.lit(1)).otherwise(f.lit(0)))
+
+# COMMAND ----------
+
+# keep the closest date to the TA date based on the table order
+# The last choice is to choose the closest date after the TA
+w_ta = Window.partitionBy(["PERSON_ID_DEID"]).orderBy(f.col("new_date_before_TA").desc(), f.col("record_date").desc_nulls_last(), f.col("table_order").asc())
+df_1_nulls_multisource =df_1_nulls_multisource.withColumn("rank", f.row_number().over(w_ta)).filter(f.col("rank")==1)
+
+# COMMAND ----------
+
+df_1_nulls_multisource.cache()
+
+# COMMAND ----------
+
+display(df_1_nulls_multisource)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC So far we have imputed lsoa2011 (in column: lsoa) using LSOA11 informatin in multisource table. We will impute LSOA01 later  
+
+# COMMAND ----------
+
+# Union of tables
+df_1.count()
+
+# COMMAND ----------
+
+df_1.columns
+
+# COMMAND ----------
+
+# This inclused records were a)lsoa01 and lsoa11 re different and b) are the same
+df_1_part_2011 = df_1.filter(f.col("2011_is_null")==0)
+
+
+# COMMAND ----------
+
+df_1_2001_only_final.cache()
+#df_1_nulls_multisource.cache()
+
+# COMMAND ----------
+
+# pre_TA only
+print(df_1.count())
+# valie 2011 
+print(df_1_part_2011.count())
+# 2001 to 2011 
+print(df_1_2001_only_final.count())
+# imputed null 2001 and 2011
+print(df_1_nulls_multisource.count())
+
+# COMMAND ----------
+
+df_1_part_2011 = df_1_part_2011.withColumn("LSOA11_curated_pre_TA", f.col("LSOA11_pre_TA")).drop("2011_is_null").drop("2001_is_null").drop("identical_lsoa").withColumn("info_LSOA_pre_TA", f.lit("Valid 2011"))
+
+# COMMAND ----------
+
+df_1_part_2001 = df_1_2001_only_final.withColumnRenamed("LSOA11CD", "LSOA11_curated_pre_TA").drop("2011_is_null").drop("2001_is_null").drop("identical_lsoa").withColumn("info_LSOA_pre_TA", f.lit("Mapped from 2001"))
+
+# COMMAND ----------
+
+df_1_part_nulls = df_1_nulls_multisource.select(["PERSON_ID_DEID", "LSOA01_pre_TA", "LSOA11_pre_TA", "lsoa", "data_source", "new_date_before_TA"]).\
+    withColumnRenamed("lsoa", "LSOA11_curated_pre_TA").\
+        withColumn("info_LSOA_pre_TA",f.concat(f.lit("LSOA11 imputed form: "), f.col("data_source"), f.lit(", "), f.when(f.col("new_date_before_TA")==1, f.lit("pre_TA")).otherwise(f.lit("post_TA")))).drop("data_source").drop("new_date_before_TA")
+
+
+# COMMAND ----------
+
+df_1_final = df_1_part_2011.union(df_1_part_2001).union(df_1_part_nulls)
+
+# COMMAND ----------
+
+df_1_final.count()
+
+# COMMAND ----------
+
+df_1_final.filter(f.col("LSOA11_curated_pre_TA").isNull()).count()
+
+# COMMAND ----------
+
+# Save a temporary checkpoint
+df_1_final.write.mode('overwrite').saveAsTable(f'{dbc_write}.ccu075_01_hes_apc_temp_df_1_updated')
+
+# COMMAND ----------
+
+df_1_final = spark.table(f'{dbc_write}.ccu075_01_hes_apc_temp_df_1_updated')
+display(df_1_final)
+
+# COMMAND ----------
+
+display(df_1_final.filter((f.col("LSOA01_pre_TA").isNull())|(f.col("LSOA11_pre_TA").isNull())))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # 2. Pre-index date
+
+# COMMAND ----------
+
+df_2 = df_lsoa_01.select(["PERSON_ID_DEID", "LSOA01_pre_index_date"]).join(df_lsoa_11.select(["PERSON_ID_DEID", "LSOA11_pre_index_date"]), on= ["PERSON_ID_DEID"], how= "inner")
+
+
+# COMMAND ----------
+
+count_var(df_2, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+display(df_2)
+
+# COMMAND ----------
+
+# add null flags
+df_2 = df_2.withColumn("2011_is_null", f.when(f.col("LSOA11_pre_index_date").isNull(), f.lit(1)).otherwise(f.lit(0)))
+df_2 = df_2.withColumn("2001_is_null", f.when(f.col("LSOA01_pre_index_date").isNull(), f.lit(1)).otherwise(f.lit(0)))
+
+# COMMAND ----------
+
+display(df_2.groupBy(["2001_is_null", "2011_is_null"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# Check the records where both are null
+display(df_2.filter(f.col("2001_is_null")==1).filter(f.col("2011_is_null")==1))
+
+# COMMAND ----------
+
+# Check non English LSOAs
+display(df_2.filter((~f.col("LSOA01_pre_index_date").startswith("E")) | (~f.col("LSOA11_pre_index_date").startswith("E"))))
+
+# COMMAND ----------
+
+# How many identical LSOA 2001 and LSOA 2011
+df_2 = df_2.withColumn("identical_lsoa", f.when(f.col("LSOA01_pre_index_date")==f.col("LSOA11_pre_index_date"), f.lit(1)).otherwise(f.lit(0)))
+
+# COMMAND ----------
+
+display(df_2.groupBy(["2001_is_null", "2011_is_null","identical_lsoa" ]).agg(f.count("*")))
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Strategy for pre index date
+# MAGIC
+# MAGIC - Use LSOA 2011 for mapping to IMD
+# MAGIC - Most LSOAs are identical
+# MAGIC - Some LSOA2001 are different from LSOA 2011: For these records use 2011
+# MAGIC - Some patients have LSOA 2001 only: Map to 2011
+# MAGIC - Some patients have null pre-index date LSOA (check patient characteristic table)
+
+# COMMAND ----------
+
+# Check LSOA2001s that must be mapped to LSOA2011
+df_2_2001_only = df_2.filter(f.col("2001_is_null")==0).filter(f.col("2011_is_null")==1)
+display(df_2_2001_only)
+
+# COMMAND ----------
+
+# Join with the mapping file
+df_2_2001_only_mapped = df_2_2001_only.join(df_map.select(["LSOA01CD", "LSOA11CD", "CHANGE_ID"]), df_2_2001_only.LSOA01_pre_index_date == df_map.LSOA01CD, how="left")
+display(df_2_2001_only_mapped.orderBy("CHANGE_ID"))
+
+# COMMAND ----------
+
+# clean table
+df_2_2001_only_final = df_2_2001_only_mapped.drop("LSOA01CD").drop("CHANGE_ID").drop("rank")
+display(df_2_2001_only_final)
+
+# COMMAND ----------
+
+# All Nulls
+df_2_nulls = df_2.filter(f.col("2001_is_null")==1).filter(f.col("2011_is_null")==1)
+display(df_2_nulls)
+
+# COMMAND ----------
+
+# Add index date date
+df_2_nulls = df_2_nulls.withColumn("index_date", f.to_date(f.lit("2022-07-01")))
+display(df_2_nulls)
+
+# COMMAND ----------
+
+# Join with multisource table  
+df_2_nulls_multisource = f.broadcast(df_2_nulls).join(df_multisource, on= ["PERSON_ID_DEID"], how= "left")
+# Keep records before the index date
+df_2_nulls_multisource =df_2_nulls_multisource.withColumn("new_date_before_index_date", f.when(f.col("record_date")<=f.col("index_date"), f.lit(1)).otherwise(f.lit(0)))
+
+# COMMAND ----------
+
+display(df_2_nulls_multisource.limit(10))
+
+# COMMAND ----------
+
+# keep the closest date to the TA date based on the table order
+# The last choice is to choose the closest date after the TA
+w_index = Window.partitionBy(["PERSON_ID_DEID"]).orderBy(f.col("new_date_before_index_date").desc(), f.col("record_date").desc_nulls_last(), f.col("table_order").asc())
+df_2_nulls_multisource =df_2_nulls_multisource.withColumn("rank", f.row_number().over(w_index)).filter(f.col("rank")==1)
+
+# COMMAND ----------
+
+display(df_2_nulls_multisource)
+
+# COMMAND ----------
+
+# union 2011, 2001 mapped to 2011, and imputed nulls
+df_2_part_2011 = df_2.filter(f.col("2011_is_null")==0)
+
+# COMMAND ----------
+
+df_2_2001_only_final.cache()
+df_2_nulls_multisource.cache()
+
+# COMMAND ----------
+
+# pre_index date only
+print(df_2.count())
+# valid 2011 
+print(df_2_part_2011.count())
+# 2001 to 2011 
+print(df_2_2001_only_final.count())
+# imputed null 2001 and 2011
+print(df_2_nulls_multisource.count())
+
+# COMMAND ----------
+
+df_2_part_2011 = df_2_part_2011.withColumn("LSOA11_curated_pre_index_date", f.col("LSOA11_pre_index_date")).drop("2011_is_null").drop("2001_is_null").drop("identical_lsoa").withColumn("info_LSOA_pre_index_date", f.lit("Valid 2011"))
+
+# COMMAND ----------
+
+df_2_part_2001 = df_2_2001_only_final.withColumnRenamed("LSOA11CD", "LSOA11_curated_pre_index_date").drop("2011_is_null").drop("2001_is_null").drop("identical_lsoa").withColumn("info_LSOA_pre_index_date", f.lit("Mapped from 2001"))
+
+# COMMAND ----------
+
+df_2_part_nulls = df_2_nulls_multisource.select(["PERSON_ID_DEID", "LSOA01_pre_index_date", "LSOA11_pre_index_date", "lsoa", "data_source", "new_date_before_index_date"]).\
+    withColumnRenamed("lsoa", "LSOA11_curated_pre_index_date").\
+        withColumn("info_LSOA_pre_index_date",f.concat(f.lit("Imputed, source: "), f.col("data_source"), f.lit(", "), f.when(f.col("new_date_before_index_date")==1, f.lit("pre_index_date")).otherwise(f.lit("post_index_date")))).drop("data_source").drop("new_date_before_index_date")
+
+# COMMAND ----------
+
+df_2_final = df_2_part_2011.union(df_2_part_2001).union(df_2_part_nulls)
+
+# COMMAND ----------
+
+df_2_final.count()
+
+# COMMAND ----------
+
+display(df_2_final)
+
+# COMMAND ----------
+
+# Save a temporary checkpoint
+df_2_final.write.mode('overwrite').saveAsTable(f'{dbc_write}.ccu075_01_hes_apc_temp_df_2_updated')
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # 3. pre adjusted date
+
+# COMMAND ----------
+
+df_3 = df_lsoa_01.select(["PERSON_ID_DEID", "LSOA01_pre_adjusted_date"]).join(df_lsoa_11.select(["PERSON_ID_DEID", "LSOA11_pre_adjusted_date"]), on= ["PERSON_ID_DEID"], how= "inner")
+
+# COMMAND ----------
+
+count_var(df_3, "PERSON_ID_DEID")
+
+# COMMAND ----------
+
+display(df_3)
+
+# COMMAND ----------
+
+# add null flags
+df_3 = df_3.withColumn("2011_is_null", f.when(f.col("LSOA11_pre_adjusted_date").isNull(), f.lit(1)).otherwise(f.lit(0)))
+df_3 = df_3.withColumn("2001_is_null", f.when(f.col("LSOA01_pre_adjusted_date").isNull(), f.lit(1)).otherwise(f.lit(0)))
+
+# COMMAND ----------
+
+display(df_3.groupBy(["2001_is_null", "2011_is_null"]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# Check the records where both are null
+display(df_3.filter(f.col("2001_is_null")==1).filter(f.col("2011_is_null")==1))
+
+# COMMAND ----------
+
+# Check non English LSOAs 
+display(df_3.filter((~f.col("LSOA01_pre_adjusted_date").startswith("E")) | (~f.col("LSOA11_pre_adjusted_date").startswith("E"))))
+
+# COMMAND ----------
+
+# How many identical LSOA 2001 and LSOA 2011
+df_3 = df_3.withColumn("identical_lsoa", f.when(f.col("LSOA01_pre_adjusted_date")==f.col("LSOA11_pre_adjusted_date"), f.lit(1)).otherwise(f.lit(0)))
+
+# COMMAND ----------
+
+display(df_3.groupBy(["2001_is_null", "2011_is_null","identical_lsoa" ]).agg(f.count("*")))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Strategy for pre adjusted date
+# MAGIC
+# MAGIC - Use LSOA 2011 for mapping to IMD
+# MAGIC - Most LSOAs are identical
+# MAGIC - Some LSOA2001 are different from LSOA 2011: For these records use 2011
+# MAGIC - Some patients have LSOA 2001 only: Map to 2011
+# MAGIC - Some patients have null pre-adjusted date LSOA
+
+# COMMAND ----------
+
+# Check LSOA2001s that must be mapped to LSOA2011
+df_3_2001_only = df_3.filter(f.col("2001_is_null")==0).filter(f.col("2011_is_null")==1)
+display(df_3_2001_only)
+
+# COMMAND ----------
+
+# Join with the mapping file
+df_3_2001_only_mapped = df_3_2001_only.join(df_map.select(["LSOA01CD", "LSOA11CD", "CHANGE_ID"]), df_3_2001_only.LSOA01_pre_adjusted_date == df_map.LSOA01CD, how="left")
+display(df_3_2001_only_mapped.orderBy("CHANGE_ID"))
+
+# COMMAND ----------
+
+# Keep one in random (LSOA01 ascending)
+w = Window.partitionBy(["PERSON_ID_DEID", "LSOA01CD"]).orderBy(f.col("LSOA01CD").asc())
+df_3_2001_only_mapped = df_3_2001_only_mapped.withColumn("rank", f.row_number().over(w))
+df_3_2001_only_mapped = df_3_2001_only_mapped.filter(f.col("rank")==1)
+display(df_3_2001_only_mapped.orderBy("CHANGE_ID"))
+
+# COMMAND ----------
+
+# clean table
+df_3_2001_only_final = df_3_2001_only_mapped.drop("LSOA01CD").drop("CHANGE_ID").drop("rank")
+display(df_3_2001_only_final)
+
+# COMMAND ----------
+
+# All Nulls
+df_3_nulls = df_3.filter(f.col("2001_is_null")==1).filter(f.col("2011_is_null")==1)
+display(df_3_nulls)
+
+# COMMAND ----------
+
+# Add adjusted date
+df_3_nulls = df_3_nulls.join(df_mix.select(["PERSON_ID_DEID", "adjusted_diag_date"]), on="PERSON_ID_DEID", how="left")
+display(df_3_nulls)
+
+# COMMAND ----------
+
+df_3_nulls.dtypes
+
+# COMMAND ----------
+
+# Join with multisource table  
+df_3_nulls_multisource = f.broadcast(df_3_nulls).join(df_multisource, on= ["PERSON_ID_DEID"], how= "left")
+# Keep records before the adjusTed date
+df_3_nulls_multisource =df_3_nulls_multisource.withColumn("new_date_before_adjusted_date", f.when(f.col("record_date")<=f.col("adjusted_diag_date"), f.lit(1)).otherwise(f.lit(0)))
+
+# COMMAND ----------
+
+display(df_3_nulls_multisource.limit(10))
+
+# COMMAND ----------
+
+# keep the closest date to the adjusted date based on the table order
+# The last choice is to choose the closest date after the adjusted
+w_adj = Window.partitionBy(["PERSON_ID_DEID"]).orderBy(f.col("new_date_before_adjusted_date").desc(), f.col("record_date").desc_nulls_last(), f.col("table_order").asc())
+df_3_nulls_multisource =df_3_nulls_multisource.withColumn("rank", f.row_number().over(w_adj)).filter(f.col("rank")==1)
+
+# COMMAND ----------
+
+display(df_3_nulls_multisource)
+
+# COMMAND ----------
+
+# Union of tables
+df_3.count()
+
+# COMMAND ----------
+
+# union 2011, 2001 mapped to 2011, and imputed nulls
+df_3_part_2011 = df_3.filter(f.col("2011_is_null")==0)
+
+# COMMAND ----------
+
+df_3_2001_only_final.cache()
+df_3_nulls_multisource.cache()
+
+# COMMAND ----------
+
+# pre_adjusted date only
+print(df_3.count())
+# valie 2011 
+print(df_3_part_2011.count())
+# 2001 to 2011 
+print(df_3_2001_only_final.count())
+# imputed null 2001 and 2011
+print(df_3_nulls_multisource.count())
+
+# COMMAND ----------
+
+df_3_part_2011 = df_3_part_2011.withColumn("LSOA11_curated_pre_adjusted_date", f.col("LSOA11_pre_adjusted_date")).drop("2011_is_null").drop("2001_is_null").drop("identical_lsoa").withColumn("info_LSOA_pre_adjusted_date", f.lit("Valid 2011"))
+
+# COMMAND ----------
+
+df_3_part_2001 = df_3_2001_only_final.withColumnRenamed("LSOA11CD", "LSOA11_curated_pre_adjusted_date").drop("2011_is_null").drop("2001_is_null").drop("identical_lsoa").withColumn("info_LSOA_pre_adjusted_date", f.lit("Mapped from 2001"))
+
+# COMMAND ----------
+
+df_3_part_nulls = df_3_nulls_multisource.select(["PERSON_ID_DEID", "LSOA01_pre_adjusted_date", "LSOA11_pre_adjusted_date", "lsoa", "data_source", "new_date_before_adjusted_date"]).\
+    withColumnRenamed("lsoa", "LSOA11_curated_pre_adjusted_date").\
+        withColumn("info_LSOA_pre_adjusted_date",f.concat(f.lit("Imputed, source: "), f.col("data_source"), f.lit(", "), f.when(f.col("new_date_before_adjusted_date")==1, f.lit("pre_adjusted_date")).otherwise(f.lit("post_adjusted_date")))).drop("data_source").drop("new_date_before_adjusted_date")
+
+# COMMAND ----------
+
+df_3_final = df_3_part_2011.union(df_3_part_2001).union(df_3_part_nulls)
+
+# COMMAND ----------
+
+df_3_final.count()
+
+# COMMAND ----------
+
+display(df_3_final)
+
+# COMMAND ----------
+
+# Save a temporary checkpoint
+df_3_final.write.mode('overwrite').saveAsTable(f'{dbc_write}.ccu075_01_hes_apc_temp_df_3_updated')
