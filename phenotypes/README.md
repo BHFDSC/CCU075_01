@@ -1,1 +1,1 @@
-Phenotype code lists related to the analysis conducted for this project.
+The phenotype used to find cases of Takayasu arteritis is ICD-10 M314 - Aortic arch syndrome [Takayasu].
