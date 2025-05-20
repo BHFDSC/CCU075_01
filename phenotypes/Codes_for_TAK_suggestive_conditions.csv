@@ -1,9 +1,0 @@
-Code,Type,Description
-I351,ICD-10,Aortic (valve) insufficiency
-I652,ICD-10,Occlusion and stenosis of carotid artery
-I712,ICD-10,"Thoracic aortic aneurysm, without mention of rupture"
-I771,ICD-10,Stricture of artery
-I776,ICD-10,"Arteritis, unspecified"
-M316,ICD-10,Other giant cell arteritis
-Z512,ICD-10,Other chemotherapy
-Z958,ICD-10,Presence of other cardiac and vascular implants and grafts
