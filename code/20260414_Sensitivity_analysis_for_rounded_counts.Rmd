@@ -1,0 +1,67 @@
+---
+title: "Incidence and prevalence estimates for Takayasu arteritis in England"
+author: "SJ Lax"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+### Setup
+
+```{r setup}
+#setup markdown
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+
+#load data
+rounded_data <- read.csv("[redacted]~/20260414_Rounded_Counts.csv") 
+```
+
+### Repeat calculations using lowest and highest possible counts
+
+```{r annual_incidence}
+# Set parameters for analyses
+CI_level <- 0.95
+rate_multiplier <- 1000000
+
+# Rate per million with 2-tailed 95% Poisson confidence intervals
+new_rates <- rounded_data %>%
+  rowwise %>%
+  mutate(Variable = if_else(is.na(Group), "Year", Group),
+         Year = if_else(is.na(Year), "Total", Year),
+         Population2 = as.numeric(gsub(",", "", Population)),
+                Rounded_estimate = paste0(round(Cases/Population2*rate_multiplier,1), 
+                          " (", 
+                          round(poisson.test(Cases,conf.level = CI_level)$conf.int[1]/Population2*rate_multiplier,1), 
+                          ", ", 
+                          round(poisson.test(Cases,conf.level = CI_level)$conf.int[2]/Population2*rate_multiplier,1),
+                          ")"),
+         Lowest_estimate = paste0(round(Lowest_possible_count/Population2*rate_multiplier,1), 
+                                  " (", 
+                                  round(poisson.test(Lowest_possible_count,conf.level = CI_level)$conf.int[1]/Population2*rate_multiplier,1), 
+                                  ", ", 
+                                  round(poisson.test(Lowest_possible_count,conf.level = CI_level)$conf.int[2]/Population2*rate_multiplier,1),
+                                  ")"),
+         Highest_estimate = paste0(round(Highest_possible_count/Population2*rate_multiplier,1), 
+                                   " (", 
+                                   round(poisson.test(Highest_possible_count,conf.level = CI_level)$conf.int[1]/Population2*rate_multiplier,1), 
+                                   ", ", 
+                                   round(poisson.test(Highest_possible_count,conf.level = CI_level)$conf.int[2]/Population2*rate_multiplier,1),
+                                   ")")
+  ) %>%
+  rename(Rounded_cases = Cases) %>%
+  select(Table, Variable, Year, Population, Rounded_cases, Rounded_estimate, Lowest_possible_count, Lowest_estimate, Highest_possible_count, Highest_estimate) 
+
+# write.csv(new_rates, "20260414_Rates_from_Rounded_Counts.csv")
+```
+
+### Version
+
+```{r version, echo=FALSE}
+#4.5.1
+sessionInfo()
+```
